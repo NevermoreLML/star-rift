@@ -106,7 +106,7 @@ const car = createCar();
 scene.add(car.group);
 const trails = [new Trail(scene, 0xff3cf0), new Trail(scene, 0xff3cf0)];
 const particles = new Particles(scene);
-const speedLines = new SpeedLines(camera);
+const speedLines = new SpeedLines(scene);
 const audio = new SynthAudio();
 
 // ---------------------------------------------------------------------------
@@ -742,13 +742,12 @@ function updateCamera(dt) {
   boostPass.uniforms.uAmount.value = game.boostFx;
   bloom.strength = 0.6 + 0.15 * game.boostFx;
   updateTunnelFocus(dt);
-  speedLines.update(dt, game.lost ? 0 : game.v, game.lost ? 0 : norm, game.boostFx, tunnelDir);
+  speedLines.update(dt, path, game.s, game.a, game.lost ? 0 : game.v, game.lost ? 0 : norm, game.boostFx);
 }
 
-// 隧道中心（前方管道中轴线上的点）在相机里的方向和屏幕位置：
-// 速度线沿这个方向飞来，加速残影以它为圆心。管道弯曲、扭转时跟着移动
+// 隧道中心（前方管道中轴线上的点）在屏幕上的位置：加速残影以它为圆心，
+// 管道弯曲、扭转时跟着移动
 const tunnelPt = new THREE.Vector3();
-const tunnelDir = new THREE.Vector3(0, 0, -1);
 const tunnelUv = new THREE.Vector2(0.5, 0.56);
 const tunnelUvTarget = new THREE.Vector2();
 
@@ -756,8 +755,6 @@ function updateTunnelFocus(dt) {
   camera.updateMatrixWorld();
   tunnelPt.copy(game.track.path.frame(game.s + 60).p);
   const k = 1 - Math.exp(-dt * 6);
-  const local = camera.worldToLocal(tmpV.copy(tunnelPt));
-  if (local.z < -1) tunnelDir.lerp(local.normalize(), k).normalize();
   const ndc = tmpV.copy(tunnelPt).project(camera);
   if (ndc.z < 1) {
     tunnelUvTarget.set(
@@ -783,8 +780,7 @@ function updateMenuCamera(dt) {
   camera.updateProjectionMatrix();
   boostPass.uniforms.uAmount.value = 0;
   bloom.strength = 0.6;
-  updateTunnelFocus(dt);
-  speedLines.update(dt, 34, 0.4, 0, tunnelDir);
+  speedLines.update(dt, path, game.s, game.camA, 34, 0.55, 0);
 }
 
 function drawRadar() {

@@ -317,57 +317,74 @@ export class Particles {
 }
 
 // ---------------------------------------------------------------------------
-// 速度线：挂在相机上，随速度拉长
+// 速度线：放在管道里的发光细线，沿管道中轴方向排布，所以会跟着管道的弧度弯；
+// 车开过去时从远处涌来、从身边掠过。远处（隧道中心）和赛车所在的赛道上方不出线，
+// 保证玩家看前方落点的视线干净。
 // ---------------------------------------------------------------------------
 const SPEEDLINE_BASE = new THREE.Color(0x9fdcff);
 const SPEEDLINE_BOOST = new THREE.Color(0x4dfff4).multiplyScalar(1.6);
-const SPEEDLINE_FWD = new THREE.Vector3(0, 0, -1);
+const SL_AHEAD_MIN = 45, SL_AHEAD_MAX = 95; // 新线生成在前方这个距离范围
+const SL_FADE_FAR = 55, SL_FADE_NEAR = 25;   // 比 FADE_FAR 远的看不见，近到 FADE_NEAR 才完全显示
+const SL_CLEAR_LANES = 1.3;                  // 赛车左右各这么多条赛道上方不出线
+
 export class SpeedLines {
-  constructor(camera, count = 160) {
+  constructor(scene, count = 240) {
     this.count = count;
-    this.items = [];
-    this.d = new THREE.Vector3();
-    this.u = new THREE.Vector3();
-    this.v = new THREE.Vector3();
-    for (let i = 0; i < count; i++) this.items.push(this.spawn({}, true));
-    this.arr = new Float32Array(count * 6);
+    this.items = Array.from({ length: count }, () => ({ s: 0, a: 0, h: 0 }));
+    this.path = null;
+    this.pos = new Float32Array(count * 4 * 3);
+    this.col = new Float32Array(count * 4 * 3);
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(this.arr, 3));
-    this.mat = new THREE.LineBasicMaterial({ color: 0x9fdcff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
-    this.lines = new THREE.LineSegments(g, this.mat);
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(this.col, 3));
+    this.lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
     this.lines.frustumCulled = false;
-    camera.add(this.lines);
+    scene.add(this.lines);
+    this.color = new THREE.Color();
+    this.p = new THREE.Vector3();
   }
 
-  spawn(o, init) {
-    const ang = Math.random() * Math.PI * 2;
-    const rad = 2.5 + Math.random() * 9;
-    o.x = Math.cos(ang) * rad;
-    o.y = Math.sin(ang) * rad;
-    o.z = init ? -Math.random() * 90 : -90;
-    return o;
+  spawn(o, carS, carA, init) {
+    o.s = carS + (init ? -10 + Math.random() * (SL_AHEAD_MAX + 10) : SL_AHEAD_MIN + Math.random() * (SL_AHEAD_MAX - SL_AHEAD_MIN));
+    // 避开赛车所在赛道的正上方（那里是玩家要看清的跑道）
+    const off = SL_CLEAR_LANES + Math.random() * (10 - 2 * SL_CLEAR_LANES);
+    o.a = carA + off;
+    o.h = 0.6 + Math.random() * 4.6;
   }
 
-  // boost 0..1：加速时线条更长、更亮并偏青色
-  // dir：相机坐标系里指向隧道中心的方向，线条围绕这条轴分布、沿它飞来
-  update(dt, speed, norm, boost = 0, dir = SPEEDLINE_FWD) {
-    const len = (0.5 + speed * 0.06) * (1 + 1.6 * boost);
-    const d = this.d.copy(dir).negate(); // 线条从远处朝相机飞来的方向
-    const u = this.u.set(0, 1, 0).cross(d);
-    if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
-    u.normalize();
-    const v = this.v.crossVectors(d, u);
+  // path/carS/carA：当前管道和赛车位置；norm：速度/极速；boost 0..1：加速时更长、更亮、偏青
+  update(dt, path, carS, carA, speed, norm, boost = 0) {
+    if (path !== this.path) {
+      this.path = path;
+      for (const o of this.items) this.spawn(o, carS, carA, true);
+    }
+    const len = (0.6 + speed * 0.07) * (1 + 1.4 * boost);
+    const bright = Math.min(1, Math.max(0, norm - 0.35) * 1.1 + boost * 0.5);
+    this.color.copy(SPEEDLINE_BASE).lerp(SPEEDLINE_BOOST, boost);
+    const c = this.color, p = this.p, pos = this.pos, col = this.col;
     for (let i = 0; i < this.count; i++) {
       const o = this.items[i];
-      o.z += speed * 1.6 * dt;
-      if (o.z > 2) this.spawn(o, false);
-      // o.x/o.y 是离中轴的偏移，o.z 是沿中轴的位置（负数在前方）
-      const bx = u.x * o.x + v.x * o.y, by = u.y * o.x + v.y * o.y, bz = u.z * o.x + v.z * o.y;
-      const z1 = o.z, z0 = o.z - len;
-      this.arr.set([bx + d.x * z1, by + d.y * z1, bz + d.z * z1, bx + d.x * z0, by + d.y * z0, bz + d.z * z0], i * 6);
+      o.s -= speed * 0.6 * dt; // 自身也往后飘，掠过感更强
+      if (o.s < carS - 12) this.spawn(o, carS, carA, false);
+      const d = o.s - carS;
+      const fade = bright
+        * THREE.MathUtils.smoothstep(SL_FADE_FAR - d, 0, SL_FADE_FAR - SL_FADE_NEAR)
+        * THREE.MathUtils.smoothstep(d, -12, -6);
+      // 头 → 中 → 尾 两段，沿管道取点，所以线条跟着管道弧度弯
+      const sh = [o.s, o.s - len * 0.5, o.s - len];
+      const k = [1, 0.55, 0];
+      const base = i * 12;
+      for (let j = 0; j < 4; j++) {
+        const idx = j === 0 ? 0 : j === 3 ? 2 : 1;
+        path.point(sh[idx], o.a, o.h, p);
+        pos[base + j * 3] = p.x; pos[base + j * 3 + 1] = p.y; pos[base + j * 3 + 2] = p.z;
+        const b = fade * k[idx];
+        col[base + j * 3] = c.r * b; col[base + j * 3 + 1] = c.g * b; col[base + j * 3 + 2] = c.b * b;
+      }
     }
     this.lines.geometry.attributes.position.needsUpdate = true;
-    this.mat.opacity = Math.min(1, Math.max(0, norm - 0.35) * 0.9 + boost * 0.5);
-    this.mat.color.copy(SPEEDLINE_BASE).lerp(SPEEDLINE_BOOST, boost);
+    this.lines.geometry.attributes.color.needsUpdate = true;
   }
 }
