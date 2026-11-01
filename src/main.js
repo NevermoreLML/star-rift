@@ -1,5 +1,5 @@
 import * as THREE from './lib.js';
-import { EffectComposer, RenderPass, UnrealBloomPass, OutputPass } from './lib.js';
+import { EffectComposer, RenderPass, UnrealBloomPass, ShaderPass, OutputPass } from './lib.js';
 import { Track, TYPE, TYPE_COLORS, LANES, LANE_ANG, WALL_H, createTrackMaterials, wrapLane, laneIndex } from './track.js';
 import { createBackground, createCar, Trail, Particles, SpeedLines } from './scene.js';
 import { SynthAudio } from './audio.js';
@@ -52,6 +52,40 @@ const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.6, 0.35, 0.6);
 composer.addPass(bloom);
+
+// 加速时的“虚幻感”：画面四周径向拉伸模糊 + 色差 + 青色晕边，中间跑道保持清晰
+const BoostShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uAmount: { value: 0 },
+    uCenter: { value: new THREE.Vector2(0.5, 0.56) },
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float uAmount; uniform vec2 uCenter; varying vec2 vUv;
+    void main(){
+      vec4 base = texture2D(tDiffuse, vUv);
+      if (uAmount < 0.001) { gl_FragColor = base; return; }
+      vec2 dir = vUv - uCenter;
+      // 中心和下方（赛车与脚下跑道）不受影响，越往四周越虚
+      vec2 m = vec2(dir.x * 1.15, dir.y > 0.0 ? dir.y : dir.y * 0.4);
+      float mask = smoothstep(0.2, 0.62, length(m));
+      float k = uAmount * mask;
+      vec3 acc = vec3(0.0);
+      for (int i = 0; i < 12; i++) {
+        float t = float(i) / 11.0;
+        vec2 uv = vUv - dir * t * 0.16 * k;
+        acc.r += texture2D(tDiffuse, uv - dir * 0.012 * k).r;
+        acc.g += texture2D(tDiffuse, uv).g;
+        acc.b += texture2D(tDiffuse, uv + dir * 0.012 * k).b;
+      }
+      vec3 col = acc / 12.0;
+      col += vec3(0.0, 0.3, 0.4) * k * 0.1;
+      gl_FragColor = vec4(mix(base.rgb, col, clamp(k * 1.3, 0.0, 1.0)), base.a);
+    }`,
+};
+const boostPass = new ShaderPass(BoostShader);
+composer.addPass(boostPass);
 composer.addPass(new OutputPass());
 
 window.addEventListener('resize', () => {
@@ -117,7 +151,7 @@ const game = {
   time: 0, clock: 0, countdown: 0, lastBeep: 0,
   lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
   camA: 5.5, camH: 0, camUp: new THREE.Vector3(0, 1, 0), camFrozen: false,
-  steerVis: 0, shake: 0, spin: 0,
+  steerVis: 0, shake: 0, spin: 0, boostFx: 0,
 };
 
 const ui = {
@@ -274,7 +308,7 @@ function startGame(mode) {
   Object.assign(game, {
     mode, state: 'countdown', s: 0, a: 5.5, h: 0, v: 0, vh: 0, air: false,
     time: 0, countdown: 3.2, lastBeep: 4, lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
-    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0,
+    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0,
   });
   game.camUp.set(0, 1, 0);
   jumpQueued = false;
@@ -596,7 +630,12 @@ function updateCamera(dt) {
   const fov = 70 + 16 * Math.min(norm, 1) + (game.boostT > 0 ? 8 : 0);
   camera.fov += (fov - camera.fov) * (1 - Math.exp(-dt * 4));
   camera.updateProjectionMatrix();
-  speedLines.update(dt, game.lost ? 0 : game.v, game.lost ? 0 : norm);
+  // 超出极速的部分（加速平台带来的）决定虚幻效果强度，随速度回落自然消退
+  const fxTarget = game.lost ? 0 : THREE.MathUtils.clamp((norm - 1) / 0.4, 0, 1);
+  game.boostFx += (fxTarget - game.boostFx) * (1 - Math.exp(-dt * (fxTarget > game.boostFx ? 10 : 3)));
+  boostPass.uniforms.uAmount.value = game.boostFx;
+  bloom.strength = 0.6 + 0.15 * game.boostFx;
+  speedLines.update(dt, game.lost ? 0 : game.v, game.lost ? 0 : norm, game.boostFx);
 }
 
 function updateMenuCamera(dt) {
@@ -611,7 +650,9 @@ function updateMenuCamera(dt) {
   camera.lookAt(lookAt);
   camera.fov = 75;
   camera.updateProjectionMatrix();
-  speedLines.update(dt, 34, 0.4);
+  boostPass.uniforms.uAmount.value = 0;
+  bloom.strength = 0.6;
+  speedLines.update(dt, 34, 0.4, 0);
 }
 
 function drawRadar() {

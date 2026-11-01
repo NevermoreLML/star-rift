@@ -319,6 +319,8 @@ export class Particles {
 // ---------------------------------------------------------------------------
 // 速度线：挂在相机上，随速度拉长
 // ---------------------------------------------------------------------------
+const SPEEDLINE_BASE = new THREE.Color(0x9fdcff);
+const SPEEDLINE_BOOST = new THREE.Color(0x4dfff4).multiplyScalar(1.6);
 export class SpeedLines {
   constructor(camera, count = 160) {
     this.count = count;
@@ -342,8 +344,9 @@ export class SpeedLines {
     return o;
   }
 
-  update(dt, speed, norm) {
-    const len = 0.5 + speed * 0.06;
+  // boost 0..1：加速时线条更长、更亮并偏青色
+  update(dt, speed, norm, boost = 0) {
+    const len = (0.5 + speed * 0.06) * (1 + 1.6 * boost);
     for (let i = 0; i < this.count; i++) {
       const o = this.items[i];
       o.z += speed * 1.6 * dt;
@@ -351,6 +354,7 @@ export class SpeedLines {
       this.arr.set([o.x, o.y, o.z, o.x, o.y, o.z - len], i * 6);
     }
     this.lines.geometry.attributes.position.needsUpdate = true;
-    this.mat.opacity = Math.max(0, norm - 0.35) * 0.9;
+    this.mat.opacity = Math.min(1, Math.max(0, norm - 0.35) * 0.9 + boost * 0.5);
+    this.mat.color.copy(SPEEDLINE_BASE).lerp(SPEEDLINE_BOOST, boost);
   }
 }
