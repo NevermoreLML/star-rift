@@ -121,6 +121,12 @@ export class SynthAudio {
   fall() { this.tone('sine', 700, 50, 1.8, 0.2); this.tone('sawtooth', 350, 30, 1.6, 0.05); }
   beep(hi) { this.tone('square', hi ? 1320 : 660, hi ? 1320 : 660, hi ? 0.5 : 0.18, 0.12); }
   finish() { [0, 4, 7, 12, 16].forEach((n, i) => this.tone('square', mtof(72 + n), mtof(72 + n), 0.25, 0.08, i * 0.09)); }
+  ready() { [0, 7, 12].forEach((n, i) => this.tone('triangle', mtof(79 + n), mtof(79 + n), 0.3, 0.09, i * 0.07)); }
+  airJump() {
+    this.tone('sawtooth', 300, 1800, 0.35, 0.1);
+    this.tone('sine', 600, 1600, 0.3, 0.16);
+    this.burst(0.4, 0.2, 'highpass', 1500, 6000);
+  }
   click() { this.tone('square', 900, 1200, 0.06, 0.05); }
 
   // ---- 背景音乐：124 BPM，Am - F - C - G ----

@@ -22,6 +22,9 @@ const PHYS = {
   STEER_GROUND: 3.4, // 赛道/秒
   STEER_AIR: 2.5,
   LAND_TOL: 0.35,    // 允许低于平台面多少仍能落上
+  RESCUE_DEPTH: 2.2, // 掉出平台后，低于平台面这么多才算坠毁（之前可以连跳自救）
+  ENERGY_DIST: 1000, // 在赛道上行驶多远攒满连跳能量
+  AIR_JUMP_MUL: 1.1, // 连跳初速度 = 起跳初速度 × 这个倍数
   CAR_HALF_W: 0.16,  // 车宽的一半（以赛道为单位）
   CAR_HALF_L: 1.6,
   RACE_SEED: 20261101,
@@ -151,7 +154,7 @@ const game = {
   time: 0, clock: 0, countdown: 0, lastBeep: 0,
   lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
   camA: 5.5, camH: 0, camUp: new THREE.Vector3(0, 1, 0), camFrozen: false,
-  steerVis: 0, shake: 0, spin: 0, boostFx: 0,
+  steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0,
 };
 
 const ui = {
@@ -174,6 +177,9 @@ const ui = {
   resultTitle: document.getElementById('result-title'),
   resultStats: document.getElementById('result-stats'),
   resultRank: document.getElementById('result-rank'),
+  energy: document.getElementById('energy'),
+  energyFill: document.getElementById('energy-fill'),
+  energyPct: document.getElementById('energy-pct'),
   lbList: document.getElementById('lb-list'),
   lbNote: document.getElementById('lb-note'),
   nick: document.getElementById('nick-input'),
@@ -344,7 +350,7 @@ function startGame(mode) {
   Object.assign(game, {
     mode, state: 'countdown', s: 0, a: 5.5, h: 0, v: 0, vh: 0, air: false,
     time: 0, countdown: 3.2, lastBeep: 4, lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
-    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0,
+    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0,
   });
   game.camUp.set(0, 1, 0);
   jumpQueued = false;
@@ -475,11 +481,23 @@ function lose(reason) {
 
 function vmaxAt(s) { return PHYS.VMAX + PHYS.VMAX_BONUS * Math.min(1, game.track.difficulty(s)); }
 
+function airJump() {
+  game.vh = PHYS.JUMP_V * PHYS.AIR_JUMP_MUL;
+  game.energy = 0;
+  audio.airJump();
+  showTip(t('tipAirJump'), 0.8);
+  game.shake = Math.max(game.shake, 0.25);
+  const p = car.group.position;
+  particles.emit(p, tmpV.set(0, 0, 0), 12, '#4dfff4', 0.7, 70);
+  particles.emit(p, tmpV.set(0, 0, 0), 8, '#ff3cf0', 0.5, 40);
+}
+
 function physicsStep(dt) {
   const tr = game.track;
   const vmax = vmaxAt(game.s);
   const steer = (keys.has('left') ? 1 : 0) - (keys.has('right') ? 1 : 0);
   const braking = keys.has('brake');
+  let jumped = false; // 本步已经在地面起跳或被弹射，同一次按键不再触发连跳
 
   if (game.lost) {
     // 坠落：继续沿惯性飞离管道
@@ -517,6 +535,7 @@ function physicsStep(dt) {
         game.vh = PHYS.BOUNCE_V;
         game.air = true;
         jumpQueued = false;
+        jumped = true;
         audio.bounce();
         particles.emit(car.group.position, tmpV.set(0, 0, 0), 5, TYPE_COLORS[TYPE.BOUNCE], 0.6, 40);
       }
@@ -527,10 +546,21 @@ function physicsStep(dt) {
         if (jumpQueued) {
           game.vh = PHYS.JUMP_V;
           game.air = true;
+          jumped = true;
           audio.jump();
+        }
+        // 在赛道上行驶的距离积累连跳能量
+        if (game.energy < 1) {
+          game.energy = Math.min(1, game.energy + (game.v * dt) / PHYS.ENERGY_DIST);
+          if (game.energy >= 1) { audio.ready(); showTip(t('tipReady'), 1.2); }
         }
       }
     }
+  }
+  // 空中再按空格：能量满时连跳，用完重新积累
+  if (jumpQueued && game.air && !jumped) {
+    if (game.energy >= 1) airJump();
+    else showTip(t('tipNoEnergy'), 0.7);
   }
   jumpQueued = false;
 
@@ -550,7 +580,8 @@ function physicsStep(dt) {
           game.shake = Math.max(game.shake, Math.min(0.5, impact * 0.025));
           particles.emit(car.group.position, tmpV.set(0, 0, 0), 4, TYPE_COLORS[tile.type], 0.5, 30);
         }
-      } else if (game.h <= -PHYS.LAND_TOL) {
+      } else if ((tile && game.h <= -PHYS.LAND_TOL) || game.h <= -PHYS.RESCUE_DEPTH) {
+        // 撞到平台底下，或已经掉得太深：没救了。在这之前还能用连跳救回来
         lose('fall');
         return;
       }
@@ -628,6 +659,8 @@ function updateCarPose(dt) {
   // 尾焰
   const norm = game.v / vmaxAt(game.s);
   car.engineMat.color.setRGB(0.4 * 3, 0.9 * 3, 1.0 * 3).multiplyScalar(0.5 + norm * 0.8);
+  // 连跳能量满时车底光晕跟着闪
+  car.under.material.opacity = game.energy >= 1 ? 0.45 + 0.35 * Math.sin(game.clock * 9) : 0.35;
   car.group.updateMatrixWorld();
   const upW = up.clone();
   car.nozzles.forEach((nz, i) => {
@@ -748,6 +781,10 @@ function updateHud() {
   ui.speed.textContent = Math.round(game.v * KMH);
   ui.speedFill.style.width = `${Math.min(100, (game.v / (vmax * 1.4)) * 100)}%`;
   ui.speedFill.classList.toggle('boost', game.v > vmax * 1.02);
+  const full = game.energy >= 1;
+  ui.energyFill.style.width = `${Math.floor(game.energy * 100)}%`;
+  ui.energyPct.textContent = `${Math.floor(game.energy * 100)}%`;
+  if (ui.energy.classList.contains('full') !== full) ui.energy.classList.toggle('full', full);
   if (game.mode === 'race') ui.progressFill.style.width = `${Math.min(100, (game.s / game.track.goal) * 100)}%`;
   drawRadar();
 }

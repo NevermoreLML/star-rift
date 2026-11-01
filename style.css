@@ -38,6 +38,22 @@ html, body {
 .hud-tr { position: absolute; top: calc(20px + env(safe-area-inset-top, 0px)); right: calc(24px + env(safe-area-inset-right, 0px)); text-align: right; }
 .tag { display: inline-block; font-family: 'Noto Sans SC'; font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 20px; margin-bottom: 8px; color: var(--cyan); }
 
+/* 连跳能量：满了闪光提醒 */
+.energy { width: 190px; margin: 14px 0 0 auto; text-align: left; }
+.energy-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; letter-spacing: 0.12em; color: var(--dim); }
+.energy-head b { font-family: 'Orbitron'; font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; }
+.energy-bar { height: 10px; margin-top: 5px; border-radius: 5px; background: rgba(255, 255, 255, 0.1); overflow: hidden; border: 1px solid rgba(120, 170, 255, 0.25); }
+#energy-fill { height: 100%; width: 0; background: linear-gradient(90deg, #7a4dff, var(--pink)); }
+.energy-hint { margin-top: 5px; font-size: 12px; font-weight: 700; color: var(--cyan); opacity: 0; transition: opacity 0.2s; }
+.energy.full .energy-bar { border-color: var(--cyan); animation: energy-pulse 0.9s ease-in-out infinite; }
+.energy.full #energy-fill { background: linear-gradient(90deg, var(--cyan), #fff, var(--cyan)); background-size: 200% 100%; animation: energy-shine 1.2s linear infinite; }
+.energy.full .energy-head b { color: var(--cyan); text-shadow: 0 0 10px var(--cyan); }
+.energy.full .energy-hint { opacity: 1; animation: energy-blink 0.9s ease-in-out infinite; }
+@keyframes energy-pulse { 0%, 100% { box-shadow: 0 0 4px rgba(0, 255, 240, 0.4); } 50% { box-shadow: 0 0 18px rgba(0, 255, 240, 1), 0 0 34px rgba(0, 255, 240, 0.5); } }
+@keyframes energy-shine { from { background-position: 200% 0; } to { background-position: 0 0; } }
+@keyframes energy-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .energy.full .energy-bar, .energy.full #energy-fill, .energy.full .energy-hint { animation: none; } }
+
 .progress {
   position: absolute; top: 24px; left: 50%; transform: translateX(-50%);
   width: min(40vw, 420px); height: 6px; border-radius: 3px;
