@@ -22,6 +22,7 @@ const STR = {
     lbReadonly: '暂时无法上传全球榜，成绩会保存在本机',
     lbYou: '你', rankLine: '全球排名 #{r}', rankOut: '全球排名 50 名以外', uploaded: '成绩已上传全球榜',
     notBetter: '没有超过你在全球榜的最佳成绩', localOnly: '成绩已保存在本机', uploadFail: '上传失败：{m}',
+    nickTitle: '给自己起个名字', nickDesc: '名字会显示在全球排行榜上，之后可以在菜单里修改。', nickGo: '开始比赛', cancel: '取消',
     lang: 'EN',
   },
   en: {
@@ -46,6 +47,7 @@ const STR = {
     lbReadonly: "Can't post to the global board right now. Scores are saved on this device.",
     lbYou: 'you', rankLine: 'Global rank #{r}', rankOut: 'Global rank: outside top 50', uploaded: 'Score posted to the global board',
     notBetter: "Didn't beat your best on the global board", localOnly: 'Score saved on this device', uploadFail: 'Upload failed: {m}',
+    nickTitle: 'Pick a name', nickDesc: 'It shows on the global leaderboard. You can change it later from the menu.', nickGo: 'Start race', cancel: 'Cancel',
     lang: '中文',
   },
 };

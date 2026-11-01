@@ -127,8 +127,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape') onEscape();
   else if (e.code === 'KeyR' && (game.state === 'over' || game.state === 'finished' || game.state === 'paused')) startGame(game.mode);
   else if (e.code === 'KeyM') { audio.setMuted(!audio.muted); showTip(t(audio.muted ? 'tipMuted' : 'tipUnmuted')); }
-  else if (game.state === 'menu' && e.code === 'Digit1') startGame('race');
-  else if (game.state === 'menu' && e.code === 'Digit2') startGame('endless');
+  else if (game.state === 'menu' && e.code === 'Digit1') requestStart('race');
+  else if (game.state === 'menu' && e.code === 'Digit2') requestStart('endless');
 });
 window.addEventListener('keyup', (e) => { const k = KEYMAP[e.code]; if (k) keys.delete(k); });
 window.addEventListener('blur', () => { keys.clear(); if (game.state === 'playing') pause(true); });
@@ -207,14 +207,50 @@ if (typeof nickname !== 'string' || !nickname.trim()) {
   store.set('nick', nickname);
 }
 ui.nick.value = nickname;
-ui.nick.addEventListener('change', () => {
-  const v = ui.nick.value.trim().slice(0, 16);
-  if (!v) { ui.nick.value = nickname; return; }
-  if (v === nickname) return;
-  nickname = v;
+
+// 返回是否有效；改名后同步到全球榜上自己的记录
+function setNickname(raw) {
+  const v = raw.trim().slice(0, 16);
+  if (!v) return false;
+  store.set('nickConfirmed', true);
   ui.nick.value = v;
-  store.set('nick', v);
-  board.rename(v);
+  if (v !== nickname) {
+    nickname = v;
+    store.set('nick', v);
+    board.rename(v);
+  }
+  return true;
+}
+
+ui.nick.addEventListener('change', () => { if (!setNickname(ui.nick.value)) ui.nick.value = nickname; });
+
+// 第一次开局前请玩家确认昵称（预填随机名，直接回车也行）
+const nickModal = document.getElementById('nick-modal');
+const nickModalInput = document.getElementById('nick-modal-input');
+let pendingMode = null;
+
+function requestStart(mode) {
+  if (store.get('nickConfirmed')) { startGame(mode); return; }
+  pendingMode = mode;
+  nickModalInput.value = nickname;
+  show(nickModal, true);
+  nickModalInput.focus();
+  nickModalInput.select();
+}
+
+function closeNickModal(start) {
+  if (start && !setNickname(nickModalInput.value)) { nickModalInput.focus(); return; }
+  show(nickModal, false);
+  const mode = pendingMode;
+  pendingMode = null;
+  if (start) startGame(mode);
+}
+
+document.getElementById('nick-modal-go').addEventListener('click', () => closeNickModal(true));
+document.getElementById('nick-modal-cancel').addEventListener('click', () => closeNickModal(false));
+nickModalInput.addEventListener('keydown', (e) => {
+  if (e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); closeNickModal(true); }
+  else if (e.code === 'Escape') { e.preventDefault(); closeNickModal(false); }
 });
 
 const lbView = { mode: 'race' };
@@ -404,7 +440,7 @@ function renderResult() {
   ui.resultRank.textContent = line;
 }
 
-document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => startGame(b.dataset.mode)));
+document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => requestStart(b.dataset.mode)));
 document.getElementById('btn-retry').addEventListener('click', () => startGame(game.mode));
 document.getElementById('btn-menu').addEventListener('click', toMenu);
 document.getElementById('btn-resume').addEventListener('click', () => pause(false));
