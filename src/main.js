@@ -741,7 +741,32 @@ function updateCamera(dt) {
   game.boostFx += (fxTarget - game.boostFx) * (1 - Math.exp(-dt * (fxTarget > game.boostFx ? 10 : 3)));
   boostPass.uniforms.uAmount.value = game.boostFx;
   bloom.strength = 0.6 + 0.15 * game.boostFx;
-  speedLines.update(dt, game.lost ? 0 : game.v, game.lost ? 0 : norm, game.boostFx);
+  updateTunnelFocus(dt);
+  speedLines.update(dt, game.lost ? 0 : game.v, game.lost ? 0 : norm, game.boostFx, tunnelDir);
+}
+
+// 隧道中心（前方管道中轴线上的点）在相机里的方向和屏幕位置：
+// 速度线沿这个方向飞来，加速残影以它为圆心。管道弯曲、扭转时跟着移动
+const tunnelPt = new THREE.Vector3();
+const tunnelDir = new THREE.Vector3(0, 0, -1);
+const tunnelUv = new THREE.Vector2(0.5, 0.56);
+const tunnelUvTarget = new THREE.Vector2();
+
+function updateTunnelFocus(dt) {
+  camera.updateMatrixWorld();
+  tunnelPt.copy(game.track.path.frame(game.s + 60).p);
+  const k = 1 - Math.exp(-dt * 6);
+  const local = camera.worldToLocal(tmpV.copy(tunnelPt));
+  if (local.z < -1) tunnelDir.lerp(local.normalize(), k).normalize();
+  const ndc = tmpV.copy(tunnelPt).project(camera);
+  if (ndc.z < 1) {
+    tunnelUvTarget.set(
+      THREE.MathUtils.clamp(ndc.x * 0.5 + 0.5, 0.15, 0.85),
+      THREE.MathUtils.clamp(ndc.y * 0.5 + 0.5, 0.15, 0.85)
+    );
+    tunnelUv.lerp(tunnelUvTarget, k);
+  }
+  boostPass.uniforms.uCenter.value.copy(tunnelUv);
 }
 
 function updateMenuCamera(dt) {
@@ -758,7 +783,8 @@ function updateMenuCamera(dt) {
   camera.updateProjectionMatrix();
   boostPass.uniforms.uAmount.value = 0;
   bloom.strength = 0.6;
-  speedLines.update(dt, 34, 0.4, 0);
+  updateTunnelFocus(dt);
+  speedLines.update(dt, 34, 0.4, 0, tunnelDir);
 }
 
 function drawRadar() {

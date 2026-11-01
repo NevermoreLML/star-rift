@@ -321,10 +321,14 @@ export class Particles {
 // ---------------------------------------------------------------------------
 const SPEEDLINE_BASE = new THREE.Color(0x9fdcff);
 const SPEEDLINE_BOOST = new THREE.Color(0x4dfff4).multiplyScalar(1.6);
+const SPEEDLINE_FWD = new THREE.Vector3(0, 0, -1);
 export class SpeedLines {
   constructor(camera, count = 160) {
     this.count = count;
     this.items = [];
+    this.d = new THREE.Vector3();
+    this.u = new THREE.Vector3();
+    this.v = new THREE.Vector3();
     for (let i = 0; i < count; i++) this.items.push(this.spawn({}, true));
     this.arr = new Float32Array(count * 6);
     const g = new THREE.BufferGeometry();
@@ -345,13 +349,22 @@ export class SpeedLines {
   }
 
   // boost 0..1：加速时线条更长、更亮并偏青色
-  update(dt, speed, norm, boost = 0) {
+  // dir：相机坐标系里指向隧道中心的方向，线条围绕这条轴分布、沿它飞来
+  update(dt, speed, norm, boost = 0, dir = SPEEDLINE_FWD) {
     const len = (0.5 + speed * 0.06) * (1 + 1.6 * boost);
+    const d = this.d.copy(dir).negate(); // 线条从远处朝相机飞来的方向
+    const u = this.u.set(0, 1, 0).cross(d);
+    if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
+    u.normalize();
+    const v = this.v.crossVectors(d, u);
     for (let i = 0; i < this.count; i++) {
       const o = this.items[i];
       o.z += speed * 1.6 * dt;
       if (o.z > 2) this.spawn(o, false);
-      this.arr.set([o.x, o.y, o.z, o.x, o.y, o.z - len], i * 6);
+      // o.x/o.y 是离中轴的偏移，o.z 是沿中轴的位置（负数在前方）
+      const bx = u.x * o.x + v.x * o.y, by = u.y * o.x + v.y * o.y, bz = u.z * o.x + v.z * o.y;
+      const z1 = o.z, z0 = o.z - len;
+      this.arr.set([bx + d.x * z1, by + d.y * z1, bz + d.z * z1, bx + d.x * z0, by + d.y * z0, bz + d.z * z0], i * 6);
     }
     this.lines.geometry.attributes.position.needsUpdate = true;
     this.mat.opacity = Math.min(1, Math.max(0, norm - 0.35) * 0.9 + boost * 0.5);
