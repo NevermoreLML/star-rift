@@ -322,7 +322,7 @@ export class Particles {
 // 保证玩家看前方落点的视线干净。
 // ---------------------------------------------------------------------------
 const SPEEDLINE_BASE = new THREE.Color(0x9fdcff);
-const SPEEDLINE_BOOST = new THREE.Color(0x4dfff4).multiplyScalar(1.6);
+const SPEEDLINE_BOOST = new THREE.Color(0x4dfff4);
 const SL_AHEAD_MIN = 45, SL_AHEAD_MAX = 95; // 新线生成在前方这个距离范围
 const SL_FADE_FAR = 55, SL_FADE_NEAR = 25;   // 比 FADE_FAR 远的看不见，近到 FADE_NEAR 才完全显示
 const SL_CLEAR_LANES = 1.3;                  // 赛车左右各这么多条赛道上方不出线
@@ -361,7 +361,7 @@ export class SpeedLines {
       for (const o of this.items) this.spawn(o, carS, carA, true);
     }
     const len = (0.6 + speed * 0.07) * (1 + 1.4 * boost);
-    const bright = Math.min(1, Math.max(0, norm - 0.35) * 1.1 + boost * 0.5);
+    const bright = Math.min(0.85, Math.max(0, norm - 0.35) * 1.1 + boost * 0.2);
     this.color.copy(SPEEDLINE_BASE).lerp(SPEEDLINE_BOOST, boost);
     const c = this.color, p = this.p, pos = this.pos, col = this.col;
     for (let i = 0; i < this.count; i++) {

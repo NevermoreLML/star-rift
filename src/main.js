@@ -79,14 +79,15 @@ const BoostShader = {
       vec3 acc = vec3(0.0);
       for (int i = 0; i < 12; i++) {
         float t = float(i) / 11.0;
-        vec2 uv = vUv - dir * t * 0.16 * k;
-        acc.r += texture2D(tDiffuse, uv - dir * 0.012 * k).r;
+        vec2 uv = vUv - dir * t * 0.11 * k;
+        acc.r += texture2D(tDiffuse, uv - dir * 0.009 * k).r;
         acc.g += texture2D(tDiffuse, uv).g;
-        acc.b += texture2D(tDiffuse, uv + dir * 0.012 * k).b;
+        acc.b += texture2D(tDiffuse, uv + dir * 0.009 * k).b;
       }
-      vec3 col = acc / 12.0;
-      col += vec3(0.0, 0.3, 0.4) * k * 0.1;
-      gl_FragColor = vec4(mix(base.rgb, col, clamp(k * 1.3, 0.0, 1.0)), base.a);
+      // 拖影会把赛道发光边拉成一片白光，稍微压暗一点
+      vec3 col = acc / 12.0 * (1.0 - 0.2 * k);
+      col += vec3(0.0, 0.3, 0.4) * k * 0.06;
+      gl_FragColor = vec4(mix(base.rgb, col, clamp(k, 0.0, 1.0)), base.a);
     }`,
 };
 const boostPass = new ShaderPass(BoostShader);
@@ -702,8 +703,8 @@ function updateCarPose(dt) {
     nozzleW.copy(nz).applyMatrix4(car.group.matrixWorld);
     trails[i].push(nozzleW, upW, 0.22, 0.4 + norm * 1.2);
   });
-  if (game.boostT > 0 && Math.random() < 0.6) {
-    particles.emit(nozzleW, fwd.clone().multiplyScalar(-10), 2, '#00fff0', 0.35, 2);
+  if (game.boostT > 0 && Math.random() < 0.3) {
+    particles.emit(nozzleW, fwd.clone().multiplyScalar(-10), 2, '#00a89f', 0.3, 1);
   }
 }
 
@@ -740,7 +741,7 @@ function updateCamera(dt) {
   const fxTarget = game.lost ? 0 : THREE.MathUtils.clamp((norm - 1) / 0.4, 0, 1);
   game.boostFx += (fxTarget - game.boostFx) * (1 - Math.exp(-dt * (fxTarget > game.boostFx ? 10 : 3)));
   boostPass.uniforms.uAmount.value = game.boostFx;
-  bloom.strength = 0.6 + 0.15 * game.boostFx;
+  bloom.strength = 0.6;
   updateTunnelFocus(dt);
   speedLines.update(dt, path, game.s, game.a, game.lost ? 0 : game.v, game.lost ? 0 : norm, game.boostFx);
 }
