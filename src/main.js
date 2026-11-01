@@ -24,7 +24,9 @@ const PHYS = {
   LAND_TOL: 0.35,    // 允许低于平台面多少仍能落上
   RESCUE_DEPTH: 2.2, // 掉出平台后，低于平台面这么多才算坠毁（之前可以连跳自救）
   ENERGY_DIST: 1000, // 在赛道上行驶多远攒满连跳能量
-  AIR_JUMP_MUL: 1.1, // 连跳初速度 = 起跳初速度 × 这个倍数
+  AIR_JUMP_MUL: 1.6, // 连跳初速度 = 起跳初速度 × 这个倍数（额外升高约 5.9）
+  MAX_H: 6.5,        // 离管壁的最大高度，防止飞过管道中心
+  FLIP_TIME: 0.55,   // 连跳前空翻用时
   CAR_HALF_W: 0.16,  // 车宽的一半（以赛道为单位）
   CAR_HALF_L: 1.6,
   RACE_SEED: 20261101,
@@ -154,7 +156,7 @@ const game = {
   time: 0, clock: 0, countdown: 0, lastBeep: 0,
   lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
   camA: 5.5, camH: 0, camUp: new THREE.Vector3(0, 1, 0), camFrozen: false,
-  steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0,
+  steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0,
 };
 
 const ui = {
@@ -350,7 +352,7 @@ function startGame(mode) {
   Object.assign(game, {
     mode, state: 'countdown', s: 0, a: 5.5, h: 0, v: 0, vh: 0, air: false,
     time: 0, countdown: 3.2, lastBeep: 4, lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
-    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0,
+    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0,
   });
   game.camUp.set(0, 1, 0);
   jumpQueued = false;
@@ -486,10 +488,31 @@ function airJump() {
   game.energy = 0;
   audio.airJump();
   showTip(t('tipAirJump'), 0.8);
-  game.shake = Math.max(game.shake, 0.25);
+  game.shake = Math.max(game.shake, 0.35);
+  game.flipT = PHYS.FLIP_TIME;
   const p = car.group.position;
   particles.emit(p, tmpV.set(0, 0, 0), 12, '#4dfff4', 0.7, 70);
   particles.emit(p, tmpV.set(0, 0, 0), 8, '#ff3cf0', 0.5, 40);
+  // 脚下炸开一圈冲击波，像踩着空气再跳一次
+  shockwave.position.copy(p);
+  shockwave.quaternion.setFromUnitVectors(AX_Z, tmpV2.copy(game.track.path.r).negate());
+  shockwave.userData.t = 0;
+  shockwave.visible = true;
+}
+
+const shockwave = new THREE.Mesh(
+  new THREE.RingGeometry(0.75, 1, 48),
+  new THREE.MeshBasicMaterial({ color: new THREE.Color(0x4dfff4).multiplyScalar(2), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })
+);
+shockwave.visible = false;
+scene.add(shockwave);
+
+function updateShockwave(dt) {
+  if (!shockwave.visible) return;
+  const k = (shockwave.userData.t += dt) / 0.45;
+  if (k >= 1) { shockwave.visible = false; return; }
+  shockwave.scale.setScalar(1 + k * 7);
+  shockwave.material.opacity = 1 - k;
 }
 
 function physicsStep(dt) {
@@ -567,6 +590,7 @@ function physicsStep(dt) {
   if (game.air) {
     game.vh -= PHYS.G * dt;
     game.h += game.vh * dt;
+    if (game.h > PHYS.MAX_H) { game.h = PHYS.MAX_H; game.vh = Math.min(game.vh, 0); }
     if (braking) game.v = Math.max(PHYS.AIR_MIN_V, game.v - PHYS.AIR_BRAKE * dt);
     if (game.h <= 0 && game.vh <= 0) {
       const tile = tr.laneAt(game.s, laneIndex(game.a));
@@ -623,6 +647,7 @@ const lookAt = new THREE.Vector3();
 const nozzleW = new THREE.Vector3();
 const AX_Z = new THREE.Vector3(0, 0, 1);
 const AX_X = new THREE.Vector3(1, 0, 0);
+const FLIP_PIVOT = new THREE.Vector3(0, 0.5, 0);
 
 function shortestLaneDelta(from, to) {
   let d = to - from;
@@ -654,7 +679,17 @@ function updateCarPose(dt) {
     qSpin.setFromAxisAngle(AX_Z, game.spin);
     car.group.quaternion.multiply(qSpin);
   }
-  car.body.position.y = game.air ? 0 : Math.sin(game.clock * 18) * 0.02;
+  if (game.flipT > 0) {
+    // 连跳时整车绕车身中心向前空翻一圈
+    game.flipT = Math.max(0, game.flipT - dt);
+    const k = 1 - game.flipT / PHYS.FLIP_TIME;
+    const ease = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    car.body.quaternion.setFromAxisAngle(AX_X, ease * Math.PI * 2);
+    car.body.position.copy(FLIP_PIVOT).applyQuaternion(car.body.quaternion).negate().add(FLIP_PIVOT);
+  } else {
+    car.body.quaternion.identity();
+    car.body.position.set(0, game.air ? 0 : Math.sin(game.clock * 18) * 0.02, 0);
+  }
 
   // 尾焰
   const norm = game.v / vmaxAt(game.s);
@@ -676,13 +711,15 @@ function updateCamera(dt) {
   const path = game.track.path;
   game.camA += shortestLaneDelta(game.camA, game.a) * (1 - Math.exp(-dt * 5));
   game.camA = wrapLane(game.camA);
-  game.camH += (game.h - game.camH) * (1 - Math.exp(-dt * 4));
+  // 上升时镜头跟得快（连跳不会挡住视线），下落时慢一点更平稳
+  game.camH += (game.h - game.camH) * (1 - Math.exp(-dt * (game.h > game.camH ? 9 : 4)));
   const vmax = vmaxAt(game.s);
   const norm = THREE.MathUtils.clamp(game.v / vmax, 0, 1.5);
 
   if (!game.camFrozen) {
     const ch = Math.max(-1, game.camH);
-    path.point(game.s - 9, game.camA, 3.2 + ch * 0.55, camera.position);
+    const high = Math.max(0, ch - 2.3); // 超过普通跳跃高度的部分（连跳/弹射）
+    path.point(game.s - 9 - high * 0.8, game.camA, 3.2 + ch * 0.55 + high * 0.45, camera.position);
     path.point(game.s, game.camA, 0, tmpV);
     const up = path.r.clone().negate();
     game.camUp.lerp(up, 1 - Math.exp(-dt * 7)).normalize();
@@ -848,6 +885,7 @@ function tick(dt) {
   if (st === 'paused' || st === 'menu') audio.setEngine(0, true, false, false);
 
   particles.update(dt);
+  updateShockwave(dt);
   bg.update(camera.position, game.clock);
   composer.render();
 }
