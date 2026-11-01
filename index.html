@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Star Rift 星轨断桥</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Noto+Sans+SC:wght@400;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud" class="hidden">
+    <div class="hud-tl">
+      <div class="label" data-i18n="hudTime"></div>
+      <div id="hud-time" class="big">00:00.00</div>
+      <div class="label" data-i18n="hudDist"></div>
+      <div id="hud-dist" class="mid">0 m</div>
+    </div>
+    <div class="hud-tr">
+      <div id="hud-mode" class="tag"></div>
+      <div id="hud-best-label" class="label"></div>
+      <div id="hud-best" class="mid">--</div>
+    </div>
+    <div id="hud-progress" class="progress"><div id="hud-progress-fill"></div></div>
+    <div class="hud-bottom">
+      <div class="speed-row"><span id="hud-speed" class="speed">0</span><span class="unit">KM/H</span></div>
+      <div class="speedbar"><div id="hud-speed-fill"></div></div>
+    </div>
+    <canvas id="radar" width="200" height="200"></canvas>
+    <div id="hud-tip"></div>
+  </div>
+
+  <div id="countdown" class="hidden"></div>
+
+  <button id="lang-btn" class="lang-btn" type="button" aria-label="Switch language"></button>
+
+  <div id="menu" class="overlay">
+    <div class="panel wide">
+      <div class="menu-main">
+        <h1><span id="title-main" data-i18n="title"></span><span id="title-alt" class="alt" data-i18n="titleAlt"></span></h1>
+        <p class="sub" data-i18n="tagline"></p>
+        <div class="modes">
+          <button type="button" data-mode="race"><b data-i18n="race"></b><small data-i18n="raceDesc"></small><em id="best-race"></em><kbd>1</kbd></button>
+          <button type="button" data-mode="endless"><b data-i18n="endless"></b><small data-i18n="endlessDesc"></small><em id="best-endless"></em><kbd>2</kbd></button>
+        </div>
+        <div class="controls">
+          <span><kbd>A</kbd><kbd>D</kbd> <i data-i18n="ctlSteer"></i></span>
+          <span><kbd>S</kbd> <i data-i18n="ctlBrake"></i></span>
+          <span><kbd data-i18n="keySpace"></kbd> <i data-i18n="ctlJump"></i></span>
+          <span><kbd>Esc</kbd> <i data-i18n="ctlPause"></i></span>
+          <span><kbd>M</kbd> <i data-i18n="ctlMute"></i></span>
+        </div>
+        <div id="legend" class="legend"></div>
+        <p class="hint" data-i18n="hint"></p>
+      </div>
+
+      <aside class="board">
+        <div class="board-head">
+          <h3 data-i18n="lb"></h3>
+          <div class="seg" id="lb-scope">
+            <button type="button" data-scope="global" data-i18n="lbGlobal"></button>
+            <button type="button" data-scope="local" data-i18n="lbLocal"></button>
+          </div>
+        </div>
+        <div class="seg full" id="lb-mode">
+          <button type="button" data-lbmode="race" data-i18n="race"></button>
+          <button type="button" data-lbmode="endless" data-i18n="endless"></button>
+        </div>
+        <p id="lb-note" class="lb-note"></p>
+        <ol id="lb-list" class="lb-list"></ol>
+        <label class="nick" for="nick-input"><span data-i18n="nickname"></span>
+          <input id="nick-input" type="text" maxlength="16" autocomplete="off" spellcheck="false" data-i18n-ph="nickPh">
+        </label>
+      </aside>
+    </div>
+  </div>
+
+  <div id="pause" class="overlay hidden">
+    <div class="panel small">
+      <h2 data-i18n="paused"></h2>
+      <div class="actions">
+        <button id="btn-resume" type="button" data-i18n="resume"></button>
+        <button id="btn-quit" type="button" class="ghost" data-i18n="toMenu"></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="result" class="overlay hidden">
+    <div class="panel small">
+      <h2 id="result-title"></h2>
+      <div id="result-stats" class="stats"></div>
+      <p id="result-rank" class="rank-line"></p>
+      <div class="actions">
+        <button id="btn-retry" type="button" data-i18n="retry"></button>
+        <button id="btn-menu" type="button" class="ghost" data-i18n="toMenuEsc"></button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
