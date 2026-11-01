@@ -371,7 +371,8 @@ export class Track {
     const d = this.difficulty(this.genS);
     const dc = Math.min(d, 1);
     const first = idx === 0;
-    const gap = first ? 0 : lerp(11, 30, dc) * (0.75 + 0.5 * r()) + Math.max(0, d - 1) * 25;
+    // 最小空隙要大于“不起跳直接开过去”的距离（极速下约 10.5），保证必须起跳
+    const gap = first ? 0 : lerp(14, 30, dc) * (0.8 + 0.4 * r()) + Math.max(0, d - 1) * 25;
     let len = first ? 320 : lerp(125, 34, dc) * (0.7 + 0.6 * r());
     const s0 = this.genS + gap;
     let isFinish = false;

@@ -22,6 +22,10 @@ const PHYS = {
   STEER_GROUND: 3.4, // 赛道/秒
   STEER_AIR: 2.5,
   LAND_TOL: 0.35,    // 允许低于平台面多少仍能落上
+  SUPPORT_HALF_L: 1.6, // 判定支撑时看车头/车尾离中心多远（车身半长）
+  EDGE_LAND_TOL: 0.15, // 只有车头/车尾压上平台时允许低于平台面多少
+  COYOTE: 0.12,      // 开出平台边缘后仍可普通起跳的宽限时间（秒）
+  JUMP_BUFFER: 0.15, // 落地前提前按跳，落地瞬间自动起跳的缓冲时间（秒）
   RESCUE_DEPTH: 2.2, // 掉出平台后，低于平台面这么多才算坠毁（之前可以连跳自救）
   ENERGY_DIST: 1000, // 在赛道上行驶多远攒满连跳能量
   AIR_JUMP_MUL: 1.6, // 连跳初速度 = 起跳初速度 × 这个倍数（额外升高约 5.9）
@@ -157,7 +161,7 @@ const game = {
   time: 0, clock: 0, countdown: 0, lastBeep: 0,
   lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
   camA: 5.5, camH: 0, camUp: new THREE.Vector3(0, 1, 0), camFrozen: false,
-  steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0,
+  steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0, coyote: 0, jumpBuf: 0,
 };
 
 const ui = {
@@ -353,7 +357,7 @@ function startGame(mode) {
   Object.assign(game, {
     mode, state: 'countdown', s: 0, a: 5.5, h: 0, v: 0, vh: 0, air: false,
     time: 0, countdown: 3.2, lastBeep: 4, lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
-    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0,
+    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0, coyote: 0, jumpBuf: 0,
   });
   game.camUp.set(0, 1, 0);
   jumpQueued = false;
@@ -516,6 +520,26 @@ function updateShockwave(dt) {
   shockwave.material.opacity = 1 - k;
 }
 
+// 车身中间一段（中心和左右两侧）下面的平台
+function midSupport(s, a) {
+  const tr = game.track, W = PHYS.CAR_HALF_W;
+  return tr.laneAt(s, laneIndex(a)) || tr.laneAt(s, laneIndex(a - W)) || tr.laneAt(s, laneIndex(a + W));
+}
+
+// 车身下面有没有平台：中间一段之外，车头已经压上平台、或车尾还在平台上也算
+function supportAt(s, a) {
+  const L = PHYS.SUPPORT_HALF_L;
+  return midSupport(s, a) || midSupport(s + L, a) || midSupport(s - L, a);
+}
+
+function groundJump() {
+  game.vh = PHYS.JUMP_V;
+  game.air = true;
+  game.coyote = 0;
+  game.jumpBuf = 0;
+  audio.jump();
+}
+
 function physicsStep(dt) {
   const tr = game.track;
   const vmax = vmaxAt(game.s);
@@ -536,11 +560,12 @@ function physicsStep(dt) {
   game.a = wrapLane(game.a + steer * (game.air ? PHYS.STEER_AIR : PHYS.STEER_GROUND) * dt);
 
   if (!game.air) {
-    const tile = tr.laneAt(game.s, laneIndex(game.a));
+    const tile = supportAt(game.s, game.a);
     if (!tile) {
       game.air = true;
       game.vh = 0;
       game.lastTile = null;
+      game.coyote = PHYS.COYOTE; // 刚开出边缘的一小段时间里仍可以普通起跳
     } else {
       const entered = tile !== game.lastTile;
       game.lastTile = tile;
@@ -567,11 +592,9 @@ function physicsStep(dt) {
         if (braking) game.v = Math.max(0, game.v - PHYS.BRAKE * dt);
         else if (game.v < cap) game.v = Math.min(cap, game.v + (vmax / PHYS.ACCEL_TIME) * dt);
         else if (game.boostT <= 0 || tile.type === TYPE.SLOW) game.v = Math.max(cap, game.v - (tile.type === TYPE.SLOW ? 90 : 18) * dt);
-        if (jumpQueued) {
-          game.vh = PHYS.JUMP_V;
-          game.air = true;
+        if (jumpQueued || game.jumpBuf > 0) {
+          groundJump();
           jumped = true;
-          audio.jump();
         }
         // 在赛道上行驶的距离积累连跳能量
         if (game.energy < 1) {
@@ -581,12 +604,20 @@ function physicsStep(dt) {
       }
     }
   }
-  // 空中再按空格：能量满时连跳，用完重新积累
+  // 空中按空格：
+  // 1. 刚开出边缘（宽限时间内）→ 算普通起跳，不耗能量
+  // 2. 快要落地（离平台很近）→ 先记下来，落地瞬间自动起跳，不浪费连跳能量
+  // 3. 否则能量满时连跳，用完重新积累
   if (jumpQueued && game.air && !jumped) {
-    if (game.energy >= 1) airJump();
-    else showTip(t('tipNoEnergy'), 0.7);
+    const nearLanding = game.vh < 0 && game.h > -PHYS.LAND_TOL && game.h < 0.8 && supportAt(game.s + game.v * 0.06, game.a);
+    if (game.coyote > 0) groundJump();
+    else if (nearLanding) game.jumpBuf = PHYS.JUMP_BUFFER;
+    else if (game.energy >= 1) airJump();
+    else { game.jumpBuf = PHYS.JUMP_BUFFER; showTip(t('tipNoEnergy'), 0.7); }
   }
   jumpQueued = false;
+  game.coyote = Math.max(0, game.coyote - dt);
+  game.jumpBuf = Math.max(0, game.jumpBuf - dt);
 
   if (game.air) {
     game.vh -= PHYS.G * dt;
@@ -594,12 +625,15 @@ function physicsStep(dt) {
     if (game.h > PHYS.MAX_H) { game.h = PHYS.MAX_H; game.vh = Math.min(game.vh, 0); }
     if (braking) game.v = Math.max(PHYS.AIR_MIN_V, game.v - PHYS.AIR_BRAKE * dt);
     if (game.h <= 0 && game.vh <= 0) {
-      const tile = tr.laneAt(game.s, laneIndex(game.a));
-      if (tile && game.h > -PHYS.LAND_TOL) {
+      // 车身中间落在平台上：有一定容差；只有车头/车尾压上：必须几乎齐平，避免直接开过空隙
+      const mid = midSupport(game.s, game.a);
+      const tile = mid || supportAt(game.s, game.a);
+      if (tile && game.h > -(mid ? PHYS.LAND_TOL : PHYS.EDGE_LAND_TOL)) {
         const impact = -game.vh;
         game.h = 0;
         game.vh = 0;
         game.air = false;
+        game.coyote = 0;
         if (impact > 5) {
           audio.land();
           game.shake = Math.max(game.shake, Math.min(0.5, impact * 0.025));
