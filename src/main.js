@@ -183,24 +183,18 @@ ui.nick.addEventListener('change', () => {
   board.rename(v);
 });
 
-const lbView = { scope: 'global', mode: 'race' };
+const lbView = { mode: 'race' };
 const board = new Leaderboard(() => renderBoard());
 
+// 只显示全球榜；全球榜连不上时自动改用本机成绩
 function renderBoard() {
-  const globalOk = board.hasGlobal;
-  const scope = globalOk ? lbView.scope : 'local';
-  document.querySelectorAll('#lb-scope button').forEach((b) => {
-    b.classList.toggle('on', b.dataset.scope === scope);
-    if (b.dataset.scope === 'global') b.disabled = !globalOk;
-  });
+  const scope = board.hasGlobal ? 'global' : 'local';
   document.querySelectorAll('#lb-mode button').forEach((b) => b.classList.toggle('on', b.dataset.lbmode === lbView.mode));
 
   let note = '';
   if (board.status === 'local') note = t('lbLocalOnly');
   else if (board.status === 'error') note = t('lbError');
-  else if (scope === 'global' && board.status === 'loading') note = t('lbLoading');
-  else if (scope === 'global' && board.status === 'slow') note = t('lbSlow');
-  else if (scope === 'global' && !board.canWrite) note = t('lbReadonly');
+  else if (board.status === 'loading') note = t('lbLoading');
   ui.lbNote.textContent = note;
 
   const rows = scope === 'global' ? board.global[lbView.mode] : board.local[lbView.mode];
@@ -225,7 +219,6 @@ function renderBoard() {
   });
 }
 
-document.querySelectorAll('#lb-scope button').forEach((b) => b.addEventListener('click', () => { lbView.scope = b.dataset.scope; renderBoard(); }));
 document.querySelectorAll('#lb-mode button').forEach((b) => b.addEventListener('click', () => { lbView.mode = b.dataset.lbmode; renderBoard(); }));
 
 // ---------------------------------------------------------------------------

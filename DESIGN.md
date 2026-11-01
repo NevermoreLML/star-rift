@@ -31,12 +31,13 @@
 
 ## 语言与排行榜
 - 中英文切换：右上角按钮，文案在 `src/i18n.js`。
-- 排行榜：本机榜（localStorage，每模式前 10）+ 全球榜（发布后的 Artifact 共享数据库，`lb_race/<用户id>`、`lb_endless/<用户id>`，每人每模式只保留最好成绩）。
-- 全球榜写入需要 Contributor 及以上访问级别；其他访客可以玩、可以看榜，成绩只存本机。
+- 排行榜：本机榜（localStorage，每模式前 10）+ 全球榜（Supabase 表 `scores`，主键 `(user_id, mode)`，每人每模式只保留最好成绩）。
+- 玩家第一次上传时自动匿名登录 Supabase；RLS 规则：所有人可读，只能写自己的行；表上有分数合理性检查（竞速 ≥ 60 秒）。
+- 配置在 `src/config.js`（publishable key 是公开的，不是密钥）。
 
 ## 发布
-- 在线地址：https://claude.ai/artifact/3gqaaQcfstJNLotprCfEa9
-- 更新流程：`node tools/build-artifact.mjs` 生成 `dist/index.html`，再由 Claude 发布到同一地址。
+- 正式地址（GitHub Pages）：https://nevermorelml.github.io/star-rift/ ，推送到 `main` 分支后自动更新。
+- 旧的 claude.ai 版本：https://claude.ai/artifact/3gqaaQcfstJNLotprCfEa9（那里连不上 Supabase，只有本机榜）。`node tools/build-artifact.mjs` 可生成该版本页面。
 
 ## 技术
 - 纯前端 Three.js（CDN importmap）+ UnrealBloom 辉光，Web Audio 实时合成音效与音乐，无外部素材。
