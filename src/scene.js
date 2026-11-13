@@ -233,6 +233,8 @@ export async function applyCarArt(car, art) {
       if (node) car.nozzles[i] = toCar(node.getWorldPosition(new THREE.Vector3()));
     });
     if (c.trailColor) car.trailColor = c.trailColor;
+    if (c.trailWidth !== undefined) car.trailWidth = c.trailWidth;
+    if (c.trailIntensity !== undefined) car.trailIntensity = c.trailIntensity;
   });
 }
 

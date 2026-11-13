@@ -112,7 +112,8 @@ const mats = createTrackMaterials();
 const carEnv = new THREE.PMREMGenerator(renderer).fromScene(new THREE.RoomEnvironment(), 0.04).texture;
 const car = createCar(carEnv);
 scene.add(car.group);
-const trails = [new Trail(scene, 0xff3cf0), new Trail(scene, 0xff3cf0)];
+// 拖尾点数多一些，细拖尾才能拉得够长，像划破气流的丝线
+const trails = [new Trail(scene, 0xff3cf0, 30), new Trail(scene, 0xff3cf0, 30)];
 const particles = new Particles(scene);
 const speedLines = new SpeedLines(scene);
 const audio = new SynthAudio();
@@ -770,7 +771,7 @@ function updateCarPose(dt) {
     if (!nz) return;
     if (car.trailColor) tr.color.set(car.trailColor);
     nozzleW.copy(nz).applyMatrix4(car.group.matrixWorld);
-    tr.push(nozzleW, upW, 0.22, 0.4 + norm * 1.2);
+    tr.push(nozzleW, upW, car.trailWidth ?? 0.22, (0.4 + norm * 1.2) * (car.trailIntensity ?? 1));
   });
   if (game.boostT > 0 && car.nozzles.length && Math.random() < 0.3) {
     particles.emit(nozzleW, fwd.clone().multiplyScalar(-10), 2, '#00a89f', 0.3, 1);

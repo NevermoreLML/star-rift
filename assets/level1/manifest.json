@@ -34,7 +34,9 @@
     "wheelCenters": [[0.74, 0.32, 2.42], [-0.7, 0.32, 2.42], [0.73, 0.32, -0.72], [-0.69, 0.32, -0.72]],
     "wheelRadius": 0.33,
     "trails": [[0.46, 0.98, -1.28], [-0.46, 0.98, -1.28]],
-    "trailColor": "#4a6a88",
+    "trailColor": "#d8ecff",
+    "trailWidth": 0.025,
+    "trailIntensity": 0.35,
     "envIntensity": 0.4
   },
 
