@@ -31,7 +31,7 @@ const PHYS = {
   ENERGY_DIST: 1000, // 在赛道上行驶多远攒满连跳能量
   AIR_JUMP_MUL: 1.6, // 连跳初速度 = 起跳初速度 × 这个倍数（额外升高约 5.9）
   MAX_H: 6.5,        // 离管壁的最大高度，防止飞过管道中心
-  FLIP_TIME: 0.55,   // 连跳前空翻用时
+  FLIP_TIME: 0.55,   // 连跳侧向横滚一圈的用时
   CAR_HALF_W: 0.16,  // 车宽的一半（以赛道为单位）
   CAR_HALF_L: 1.6,
   RACE_SEED: 20261101,
@@ -171,7 +171,7 @@ const game = {
   time: 0, clock: 0, countdown: 0, lastBeep: 0,
   lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
   camA: 5.5, camH: 0, camUp: new THREE.Vector3(0, 1, 0), camFrozen: false,
-  steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0, coyote: 0, jumpBuf: 0,
+  steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0, flipDir: 1, coyote: 0, jumpBuf: 0,
 };
 
 const ui = {
@@ -386,7 +386,7 @@ function startGame(mode) {
   Object.assign(game, {
     mode, state: 'countdown', s: 0, a: 5.5, h: 0, v: 0, vh: 0, air: false,
     time: 0, countdown: 3.2, lastBeep: 4, lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
-    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0, coyote: 0, jumpBuf: 0,
+    camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0, flipDir: 1, coyote: 0, jumpBuf: 0,
   });
   game.camUp.set(0, 1, 0);
   jumpQueued = false;
@@ -524,6 +524,8 @@ function airJump() {
   showTip(t('tipAirJump'), 0.8);
   game.shake = Math.max(game.shake, 0.35);
   game.flipT = PHYS.FLIP_TIME;
+  // 横滚方向跟着正在按的方向键，没按就默认向左滚
+  game.flipDir = game.steerVis < -0.1 ? -1 : 1;
   const p = car.group.position;
   particles.emit(p, tmpV.set(0, 0, 0), 12, '#4dfff4', 0.7, 70);
   particles.emit(p, tmpV.set(0, 0, 0), 8, '#ff3cf0', 0.5, 40);
@@ -711,7 +713,7 @@ const lookAt = new THREE.Vector3();
 const nozzleW = new THREE.Vector3();
 const AX_Z = new THREE.Vector3(0, 0, 1);
 const AX_X = new THREE.Vector3(1, 0, 0);
-const FLIP_PIVOT = new THREE.Vector3(0, 0.5, 0);
+const FLIP_PIVOT = new THREE.Vector3(0, 0.4, 0); // 横滚绕车身中心转
 
 function shortestLaneDelta(from, to) {
   let d = to - from;
@@ -744,11 +746,11 @@ function updateCarPose(dt) {
     car.group.quaternion.multiply(qSpin);
   }
   if (game.flipT > 0) {
-    // 连跳时整车绕车身中心向前空翻一圈
+    // 连跳时整车绕车身纵轴侧向横滚一圈（车顶先朝滚动方向倒过去）
     game.flipT = Math.max(0, game.flipT - dt);
     const k = 1 - game.flipT / PHYS.FLIP_TIME;
     const ease = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
-    car.body.quaternion.setFromAxisAngle(AX_X, ease * Math.PI * 2);
+    car.body.quaternion.setFromAxisAngle(AX_Z, -game.flipDir * ease * Math.PI * 2);
     car.body.position.copy(FLIP_PIVOT).applyQuaternion(car.body.quaternion).negate().add(FLIP_PIVOT);
   } else {
     car.body.quaternion.identity();
