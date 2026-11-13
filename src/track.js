@@ -14,6 +14,8 @@ export const TYPE_COLORS = ['#3aa8ff', '#00fff0', '#b04dff', '#ff3355', '#ffd23a
 export const TYPE_NAMES = ['普通', '加速', '减速', '障碍', '短台', '碎裂', '弹射'];
 const SAFE_TYPES = [TYPE.NORMAL, TYPE.BOOST, TYPE.SLOW, TYPE.BOUNCE];
 // 认识阶段依次引入的新赛道
+// 生存模式难度节奏的拉长倍数
+const SURVIVAL_STRETCH = 1.5;
 const INTRO = [TYPE.BOUNCE, TYPE.SLOW, TYPE.SHORT, TYPE.OBSTACLE, TYPE.CRUMBLE];
 
 // 材质槽位：0..6 平台顶面，7 侧面，8..14 端头发光条，15 障碍墙，16 终点格
@@ -360,13 +362,17 @@ export class Track {
   // 终点位置（终点节还没生成时用赛道长度估计）
   get goal() { return Math.min(this.finishS, this.raceLength); }
 
+  // 生存模式的难度节奏整体拉长：走 1.5 米才相当于竞速的 1 米
+  pace(dist) { return this.mode === 'race' ? dist : dist / SURVIVAL_STRETCH; }
+
   difficulty(s) {
     if (this.mode === 'race') return clamp((s - 300) / (this.raceLength - 700), 0, 1);
-    return clamp((s - 300) / 9000, 0, 1.35);
+    return clamp((this.pace(s) - 300) / 9000, 0, 1.35);
   }
 
   // 弯道强度随阶段增加：热身和认识阶段很缓，组合阶段中等，断崖阶段最急
-  curveAmp(x) {
+  curveAmp(dist) {
+    const x = this.pace(dist);
     const P = (a, b) => clamp((x - a) / (b - a), 0, 1);
     if (x < 800) return 0.3;
     if (x < 3000) return lerp(0.3, 0.45, P(800, 3000));
@@ -440,7 +446,9 @@ export class Track {
   //   组合 3–5km：各种赛道混合，赛道数 10→7，空隙变大；4.2km 起偶尔出现“加速更轻松”的大空隙
   //   断崖 5–7.2km：赛道数 7→3，大空隙越来越多，5.8km 起出现必须踩加速或连跳才能过的断崖
   //   之后（只有生存模式）：继续缓慢加难
-  stage(x) {
+  stage(dist) { return this.stageAt(this.pace(dist)); }
+
+  stageAt(x) {
     const P = (a, b) => clamp((x - a) / (b - a), 0, 1);
     if (x < 800) return { name: 'warm', t: P(0, 800) };
     if (x < 3000) return { name: 'teach', t: P(800, 3000), intro: Math.min(INTRO.length - 1, Math.floor((x - 800) / 440)) };
@@ -450,8 +458,9 @@ export class Track {
   }
 
   // 每个阶段的空隙、平台长度、赛道数、各类型权重、大空隙
-  stageParams(x) {
-    const st = this.stage(x);
+  stageParams(dist) {
+    const x = this.pace(dist);
+    const st = this.stageAt(x);
     const t = st.t;
     const N = TYPE;
     let gap, len, count, weights, bigGap = null;
