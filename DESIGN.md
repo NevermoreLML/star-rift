@@ -40,6 +40,16 @@
 - 正式地址（GitHub Pages）：https://nevermorelml.github.io/star-rift/ ，推送到 `main` 分支后自动更新。
 - 旧的 claude.ai 版本：https://claude.ai/artifact/3gqaaQcfstJNLotprCfEa9（那里连不上 Supabase，只有本机榜）。`node tools/build-artifact.mjs` 可生成该版本页面。
 
+## 关卡规划
+- **Level 1（当前，优先）**：现在这套深空管道赛道。下一步是把代码生成的初期素材替换成正式美术资产，清单见 `art-export/index.html`。
+  - 替换方式：美术文件放进 `assets/level1/`，在 `manifest.json` 填文件名即可，没填的用内置版本；说明见 `assets/level1/README.md`，当前版本的贴图和赛车参考模型在 `assets/level1/reference/`。
+- **Level 2：Skyline Rail（天际轨道）**，概念图 `docs/concepts/level2-skyline-rail.webp`，暂不开发：
+  - 背景：近地轨道，下方是地球弧形地平线和卡门线大气光带，三种配色（蓝白偏红 / 蓝橙 / 橙绿夜景），可对应关卡前、中、后段。
+  - 天空盒远景：倒置城市 + 轨道电梯（可以靠近）；远处黑色"镜头光斑"其实是披隐形斗篷的机甲，靠近是纯黑几何体；倒挂的战列舰，侧面挂锚。
+  - 赛道：由会旋转的圆环组成，截面七边形，顶点是断点；配色金属色 + 紫色高光。
+  - 锚装置沿管道侧面延伸，侧面射出紫色光线（可作为速度线的来源）。
+  - 待确认：七边形是否等于 7 条赛道（现在是 10 条）；圆环是否真的旋转（会成为新机制）；三种背景配色怎么分配。
+
 ## 技术
 - 纯前端 Three.js（CDN importmap）+ UnrealBloom 辉光，Web Audio 实时合成音效与音乐，无外部素材。
 - 运行：`python -m http.server 8080` 后打开 http://localhost:8080

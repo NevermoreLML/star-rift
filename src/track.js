@@ -1,4 +1,5 @@
 import * as THREE from './lib.js';
+import { each, loadImage, swapImage } from './assets.js';
 
 // ---- 管道几何常量 ----
 export const LANES = 10;
@@ -289,6 +290,20 @@ export function createTrackMaterials() {
     map: ft, emissiveMap: ft, emissive: 0xffffff, emissiveIntensity: 0.35, side: THREE.DoubleSide,
   });
   return mats;
+}
+
+// 美术素材替换：赛道顶面、障碍墙、终点格。只换图片，重复方式和发光设置不变
+const ART_SLOTS = {
+  lane_0_normal: TYPE.NORMAL, lane_1_boost: TYPE.BOOST, lane_2_slow: TYPE.SLOW, lane_3_obstacle: TYPE.OBSTACLE,
+  lane_4_short: TYPE.SHORT, lane_5_crumble: TYPE.CRUMBLE, lane_6_bounce: TYPE.BOUNCE,
+  wall_hazard: SLOT_WALL, finish_checker: SLOT_FINISH,
+};
+
+export async function applyTrackArt(mats, art) {
+  const t = art.textures || {};
+  await each(Object.keys(ART_SLOTS).map((k) => [k, t[k]]), async (key, file) => {
+    swapImage(mats[ART_SLOTS[key]].map, await loadImage(file));
+  });
 }
 
 // ---------------------------------------------------------------------------

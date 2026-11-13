@@ -1,7 +1,8 @@
 import * as THREE from './lib.js';
 import { EffectComposer, RenderPass, UnrealBloomPass, ShaderPass, OutputPass } from './lib.js';
-import { Track, TYPE, TYPE_COLORS, LANES, LANE_ANG, WALL_H, createTrackMaterials, wrapLane, laneIndex } from './track.js';
-import { createBackground, createCar, Trail, Particles, SpeedLines } from './scene.js';
+import { Track, TYPE, TYPE_COLORS, LANES, LANE_ANG, WALL_H, createTrackMaterials, wrapLane, laneIndex, applyTrackArt } from './track.js';
+import { createBackground, createCar, Trail, Particles, SpeedLines, STAR_TEX, applyBackgroundArt, applyCarArt } from './scene.js';
+import { loadManifest, loadImage, loadTexture, swapImage, each, ASSET_BASE } from './assets.js';
 import { SynthAudio } from './audio.js';
 import { t, getLang, setLang, applyI18n } from './i18n.js';
 import { Leaderboard } from './leaderboard.js';
@@ -951,6 +952,37 @@ function tick(dt) {
 window.__game = game;
 window.__tick = (n = 1, dt = 1 / 60) => { for (let i = 0; i < n; i++) tick(dt); };
 
+// ---------------------------------------------------------------------------
+// 美术素材：读取 assets/level1/manifest.json，替换美术已经提供的部分（异步，不阻塞开局）
+// ---------------------------------------------------------------------------
+async function applyArt() {
+  const art = await loadManifest();
+  const tx = art.textures || {};
+  await applyTrackArt(mats, art);
+  await applyBackgroundArt(bg, art, scene);
+  await applyCarArt(car, art);
+  await each([['star_particle', tx.star_particle]], async (key, file) => swapImage(STAR_TEX, await loadImage(file)));
+  await each([['shockwave', tx.shockwave]], async (key, file) => {
+    shockwave.material.map = await loadTexture(file);
+    shockwave.material.color.set(0xffffff);
+    shockwave.material.needsUpdate = true;
+  });
+  const ui = art.ui || {};
+  await each([['logo', ui.logo]], async (key, file) => {
+    const img = await loadImage(file);
+    img.className = 'logo';
+    img.alt = 'Star Rift 星轨断桥';
+    document.querySelector('#menu h1').replaceChildren(img);
+  });
+  await each([['favicon', ui.favicon]], async (key, file) => {
+    const link = document.createElement('link');
+    link.rel = 'icon';
+    link.href = ASSET_BASE + encodeURI(file);
+    document.head.append(link);
+  });
+}
+
+applyArt();
 refreshTexts();
 toMenu();
 frame();

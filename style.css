@@ -103,6 +103,7 @@ html, body {
 
 h1 { margin: 0; font-size: 56px; font-weight: 900; letter-spacing: 0.12em; background: linear-gradient(90deg, var(--cyan), #fff 50%, var(--pink)); -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 0 18px rgba(0, 255, 240, 0.35)); }
 h1 .alt { display: block; font-family: 'Orbitron'; font-size: 16px; letter-spacing: 0.8em; margin-top: 6px; color: var(--dim); -webkit-text-fill-color: var(--dim); }
+h1 .logo { display: block; max-width: min(520px, 100%); max-height: 180px; margin: 0 auto; object-fit: contain; }
 h2 { margin: 0 0 20px; font-size: 34px; font-weight: 900; letter-spacing: 0.1em; }
 .sub { color: var(--dim); margin: 14px 0 26px; }
 

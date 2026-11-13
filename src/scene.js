@@ -1,4 +1,5 @@
 import * as THREE from './lib.js';
+import { each, loadTexture, loadModel } from './assets.js';
 
 // ---------------------------------------------------------------------------
 // 宇宙背景：星云天球 + 两层星空 + 远处行星。整体跟随相机移动，永远到不了。
@@ -54,6 +55,8 @@ function starTexture() {
   x.fillRect(0, 0, 64, 64);
   return new THREE.CanvasTexture(c);
 }
+// 星空和粒子共用这一张（美术素材 star_particle 替换的就是它）
+export const STAR_TEX = starTexture();
 
 function makeStars(count, radius, size, bright) {
   const pos = new Float32Array(count * 3);
@@ -72,7 +75,7 @@ function makeStars(count, radius, size, bright) {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   const m = new THREE.PointsMaterial({
-    size, sizeAttenuation: false, vertexColors: true, map: starTexture(),
+    size, sizeAttenuation: false, vertexColors: true, map: STAR_TEX,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   return new THREE.Points(g, m);
@@ -96,7 +99,8 @@ function makePlanet(radius, colA, colB, ring) {
         gl_FragColor = vec4(col*l + cB*rim*1.2, 1.0);
       }`,
   });
-  g.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 64, 32), mat));
+  g.userData.sphere = new THREE.Mesh(new THREE.SphereGeometry(radius, 64, 32), mat);
+  g.add(g.userData.sphere);
   if (ring) {
     const rg = new THREE.RingGeometry(radius * 1.4, radius * 2.2, 96, 1);
     const rm = new THREE.MeshBasicMaterial({ color: new THREE.Color(colB).multiplyScalar(0.6), side: THREE.DoubleSide, transparent: true, opacity: 0.45, depthWrite: false });
@@ -104,6 +108,7 @@ function makePlanet(radius, colA, colB, ring) {
     r.rotation.x = Math.PI * 0.42;
     r.rotation.y = 0.3;
     g.add(r);
+    g.userData.ring = r;
   }
   return g;
 }
@@ -112,8 +117,8 @@ export function createBackground(scene) {
   const group = new THREE.Group();
   const nebula = makeNebula();
   group.add(nebula);
-  group.add(makeStars(5000, 2300, 1.6, 1.0));
-  group.add(makeStars(600, 2200, 3.2, 1.6));
+  const stars = [makeStars(5000, 2300, 1.6, 1.0), makeStars(600, 2200, 3.2, 1.6)];
+  for (const st of stars) group.add(st);
   const p1 = makePlanet(260, '#1a2a6a', '#5ad1ff', true);
   p1.position.set(-900, 350, 1500);
   group.add(p1);
@@ -127,12 +132,56 @@ export function createBackground(scene) {
   for (const o of group.children) o.renderOrder = -1;
   scene.add(group);
   return {
-    group,
+    group, nebula, stars, planets: [p1, p2, p3],
     update(camPos, time) {
       group.position.copy(camPos);
       nebula.material.uniforms.uTime.value = time;
     },
   };
+}
+
+// 美术素材替换：全景天空、行星表面、行星环
+export async function applyBackgroundArt(bg, art, scene) {
+  await each([['sky', art.sky]], async (key, file) => {
+    const tex = await loadTexture(file);
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    scene.background = tex;
+    bg.nebula.visible = false;
+  });
+  if (art.hideProceduralStars) for (const st of bg.stars) st.visible = false;
+  const p = art.planets || {};
+  await each([['planet_1', p.planet_1], ['planet_2', p.planet_2], ['planet_3', p.planet_3]], async (key, file) => {
+    const tex = await loadTexture(file);
+    const planet = bg.planets[Number(key.slice(-1)) - 1];
+    // 受太阳光照，暗面带一点自发光，不会全黑
+    planet.userData.sphere.material = new THREE.MeshStandardMaterial({
+      map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 0.06, roughness: 1, metalness: 0,
+    });
+  });
+  await each([['planet_1_ring', p.planet_1_ring]], async (key, file) => {
+    const m = bg.planets[0].userData.ring.material;
+    m.map = await loadTexture(file);
+    m.color.set(0xffffff);
+    m.opacity = 1;
+    m.needsUpdate = true;
+  });
+}
+
+// 美术素材替换：赛车模型（.glb）。模型里名为 nozzle_L / nozzle_R 的空节点会作为两个尾焰的位置
+export async function applyCarArt(car, art) {
+  const c = art.car || {};
+  await each([['car', c.model]], async (key, file) => {
+    const model = await loadModel(file);
+    // 模型按游戏单位（≈米）制作；外层赛车组整体放大了 1.25 倍，这里抵消掉
+    model.scale.multiplyScalar((c.scale || 1) / car.group.scale.x);
+    for (const ch of car.body.children) if (ch !== car.under) ch.visible = false;
+    car.body.add(model);
+    car.group.updateMatrixWorld(true);
+    ['nozzle_L', 'nozzle_R'].forEach((name, i) => {
+      const node = model.getObjectByName(name);
+      if (node) car.nozzles[i].copy(car.group.worldToLocal(node.getWorldPosition(new THREE.Vector3())));
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +330,7 @@ export class Particles {
     g.setAttribute('position', new THREE.BufferAttribute(this.posArr, 3));
     g.setAttribute('color', new THREE.BufferAttribute(this.colArr, 3));
     this.points = new THREE.Points(g, new THREE.PointsMaterial({
-      size: 0.5, vertexColors: true, map: starTexture(), transparent: true,
+      size: 0.5, vertexColors: true, map: STAR_TEX, transparent: true,
       blending: THREE.AdditiveBlending, depthWrite: false,
     }));
     this.points.frustumCulled = false;

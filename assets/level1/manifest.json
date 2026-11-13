@@ -1,0 +1,37 @@
+{
+  "_说明": "把美术文件放进这个文件夹，然后在下面对应位置填上文件名（例如 \"lane_0_normal.png\"）。留空 \"\" 表示继续用游戏内置的版本。改完按 Ctrl+F5 刷新游戏就能看到。详细规格见同文件夹的 README.md。",
+
+  "textures": {
+    "lane_0_normal": "",
+    "lane_1_boost": "",
+    "lane_2_slow": "",
+    "lane_3_obstacle": "",
+    "lane_4_short": "",
+    "lane_5_crumble": "",
+    "lane_6_bounce": "",
+    "wall_hazard": "",
+    "finish_checker": "",
+    "star_particle": "",
+    "shockwave": ""
+  },
+
+  "sky": "",
+  "hideProceduralStars": false,
+
+  "planets": {
+    "planet_1": "",
+    "planet_1_ring": "",
+    "planet_2": "",
+    "planet_3": ""
+  },
+
+  "car": {
+    "model": "",
+    "scale": 1
+  },
+
+  "ui": {
+    "logo": "",
+    "favicon": ""
+  }
+}
