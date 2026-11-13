@@ -26,9 +26,9 @@
   },
 
   "car": {
-    "model": "models/hover_fighter_beetle.glb",
+    "model": "",
     "length": 4,
-    "rotateY": 180,
+    "rotateY": 0,
     "scale": 1
   },
 

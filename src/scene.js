@@ -1,5 +1,6 @@
 import * as THREE from './lib.js';
 import { each, loadTexture, loadModel } from './assets.js';
+import { buildSleekCar } from './carModel.js';
 
 // ---------------------------------------------------------------------------
 // 宇宙背景：星云天球 + 两层星空 + 远处行星。整体跟随相机移动，永远到不了。
@@ -197,72 +198,23 @@ export async function applyCarArt(car, art) {
 }
 
 // ---------------------------------------------------------------------------
-// 赛车：几何体拼成的霓虹悬浮车，车头朝 +Z，车顶朝 +Y
+// 赛车：原创流线型悬浮赛车（造型在 carModel.js），车头朝 +Z，车顶朝 +Y
+// envMap：金属车身反射用的环境贴图
 // ---------------------------------------------------------------------------
-export function createCar() {
+export function createCar(envMap) {
   const group = new THREE.Group();
   const body = new THREE.Group();
   group.add(body);
 
-  const hullMat = new THREE.MeshStandardMaterial({ color: 0xdfe6ff, metalness: 0.75, roughness: 0.25 });
-  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1a1f33, metalness: 0.6, roughness: 0.4 });
-  const glassMat = new THREE.MeshStandardMaterial({ color: 0x0a2a40, emissive: 0x18c8ff, emissiveIntensity: 0.9, metalness: 0.9, roughness: 0.1 });
-  const neonMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff3cf0).multiplyScalar(2.4) });
-  const engineMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x66e8ff).multiplyScalar(3) });
-
-  // 主体：前端收窄的楔形
-  const hullG = new THREE.BoxGeometry(1.5, 0.42, 3.2, 1, 1, 4);
-  const pa = hullG.attributes.position;
-  for (let i = 0; i < pa.count; i++) {
-    const z = pa.getZ(i);
-    const t = (z + 1.6) / 3.2; // 0 车尾 → 1 车头
-    pa.setX(i, pa.getX(i) * (1 - 0.55 * t * t));
-    if (pa.getY(i) > 0) pa.setY(i, pa.getY(i) * (1 - 0.75 * t));
-  }
-  hullG.computeVertexNormals();
-  const hull = new THREE.Mesh(hullG, hullMat);
-  hull.position.y = 0.45;
-  body.add(hull);
-
-  const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.42, 24, 12), glassMat);
-  cockpit.scale.set(0.9, 0.55, 1.6);
-  cockpit.position.set(0, 0.72, -0.15);
-  body.add(cockpit);
-
-  // 侧舱 + 引擎
-  const nozzles = [];
-  for (const sx of [-1, 1]) {
-    const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 1.9, 16), darkMat);
-    pod.rotation.x = Math.PI / 2;
-    pod.position.set(sx * 0.82, 0.42, -0.55);
-    body.add(pod);
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.05, 8, 24), neonMat);
-    ring.position.set(sx * 0.82, 0.42, -1.5);
-    body.add(ring);
-    const glow = new THREE.Mesh(new THREE.CircleGeometry(0.2, 20), engineMat);
-    glow.position.set(sx * 0.82, 0.42, -1.52);
-    glow.rotation.y = Math.PI;
-    body.add(glow);
-    nozzles.push(new THREE.Vector3(sx * 0.82, 0.42, -1.6));
-    // 霓虹侧条
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.05, 2.2), neonMat);
-    stripe.position.set(sx * 0.62, 0.5, 0.15);
-    stripe.rotation.y = -sx * 0.12;
-    body.add(stripe);
-  }
-
-  // 尾翼
-  const wing = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.06, 0.45), darkMat);
-  wing.position.set(0, 0.95, -1.35);
-  body.add(wing);
-  for (const sx of [-1, 1]) {
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.4, 0.4), hullMat);
-    fin.position.set(sx * 0.4, 0.75, -1.35);
-    body.add(fin);
-  }
-  const wingNeon = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.03, 0.04), neonMat);
-  wingNeon.position.set(0, 0.99, -1.57);
-  body.add(wingNeon);
+  // 造型按米制作；外层整体放大了 1.25 倍，这里抵消掉
+  const S = 1.25;
+  const sleek = buildSleekCar(envMap);
+  sleek.car.scale.setScalar(1 / S);
+  // 游戏里有辉光，环境反射调弱一些，避免车身泛白
+  sleek.car.traverse((o) => { if (o.material && o.material.envMapIntensity !== undefined) o.material.envMapIntensity *= 0.45; });
+  body.add(sleek.car);
+  const nozzles = sleek.nozzles.map((p) => p.clone().divideScalar(S));
+  const engineMat = sleek.engineMat;
 
   // 底部悬浮光
   const under = new THREE.Mesh(
@@ -273,8 +225,9 @@ export function createCar() {
   under.position.y = 0.06;
   body.add(under);
 
-  const headlight = new THREE.PointLight(0x66e8ff, 6, 20, 2);
-  headlight.position.set(0, 1.2, 2.5);
+  // 车灯放在车头前方，照亮前面的赛道，不直接打在车身上
+  const headlight = new THREE.PointLight(0x66e8ff, 4, 20, 2);
+  headlight.position.set(0, 0.8, 5);
   group.add(headlight);
 
   group.scale.setScalar(1.25);

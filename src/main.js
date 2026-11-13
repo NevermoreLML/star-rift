@@ -108,7 +108,9 @@ window.addEventListener('resize', () => {
 
 const bg = createBackground(scene);
 const mats = createTrackMaterials();
-const car = createCar();
+// 赛车金属漆反射用的环境贴图（只给赛车用，不影响赛道和背景）
+const carEnv = new THREE.PMREMGenerator(renderer).fromScene(new THREE.RoomEnvironment(), 0.04).texture;
+const car = createCar(carEnv);
 scene.add(car.group);
 const trails = [new Trail(scene, 0xff3cf0), new Trail(scene, 0xff3cf0)];
 const particles = new Particles(scene);
@@ -754,7 +756,7 @@ function updateCarPose(dt) {
 
   // 尾焰
   const norm = game.v / vmaxAt(game.s);
-  car.engineMat.color.setRGB(0.4 * 3, 0.9 * 3, 1.0 * 3).multiplyScalar(0.5 + norm * 0.8);
+  car.engineMat.color.setRGB(0.24, 0.78, 1.0).multiplyScalar(0.9 + norm * 1.3); // 越快喷口越亮
   // 连跳能量满时车底光晕跟着闪
   car.under.material.opacity = game.energy >= 1 ? 0.45 + 0.35 * Math.sin(game.clock * 9) : 0.35;
   car.group.updateMatrixWorld();
