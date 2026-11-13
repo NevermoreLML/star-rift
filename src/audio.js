@@ -30,21 +30,7 @@ export class SynthAudio {
     const d = this.noiseBuf.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
 
-    // 引擎
-    this.engGain = this.gain(0, this.sfx);
-    this.engFilter = ctx.createBiquadFilter();
-    this.engFilter.type = 'lowpass';
-    this.engFilter.frequency.value = 400;
-    this.engFilter.Q.value = 5;
-    this.engFilter.connect(this.engGain);
-    this.eng = [this.osc('sawtooth', 60, this.engFilter), this.osc('square', 60.4, this.engFilter), this.osc('sine', 30, this.engGain)];
-
-    // 风噪
-    this.windGain = this.gain(0, this.sfx);
-    this.windFilter = this.filter('bandpass', 600, 0.7, this.windGain);
-    this.loopNoise(this.windFilter);
-
-    // 刹车嘶声
+    // 刹车嘶声（发动机声和持续风噪已去掉：太吵）
     this.brakeGain = this.gain(0, this.sfx);
     this.loopNoise(this.filter('bandpass', 3200, 2.5, this.brakeGain));
 
@@ -60,7 +46,6 @@ export class SynthAudio {
 
   gain(v, dest) { const g = this.ctx.createGain(); g.gain.value = v; if (dest) g.connect(dest); return g; }
   filter(type, f, q, dest) { const n = this.ctx.createBiquadFilter(); n.type = type; n.frequency.value = f; n.Q.value = q; n.connect(dest); return n; }
-  osc(type, f, dest) { const o = this.ctx.createOscillator(); o.type = type; o.frequency.value = f; o.connect(dest); o.start(); return o; }
   loopNoise(dest) { const s = this.ctx.createBufferSource(); s.buffer = this.noiseBuf; s.loop = true; s.connect(dest); s.start(); return s; }
 
   setMusicOn(on) {
@@ -77,14 +62,6 @@ export class SynthAudio {
   setEngine(norm, grounded, braking, active) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    const f = 42 + norm * 120 + (grounded ? 0 : 18);
-    this.eng[0].frequency.setTargetAtTime(f, t, 0.06);
-    this.eng[1].frequency.setTargetAtTime(f * 1.007, t, 0.06);
-    this.eng[2].frequency.setTargetAtTime(f / 2, t, 0.06);
-    this.engFilter.frequency.setTargetAtTime(280 + norm * 2400, t, 0.08);
-    this.engGain.gain.setTargetAtTime(active ? (0.05 + norm * 0.09) * (grounded ? 1 : 0.6) : 0, t, 0.08);
-    this.windGain.gain.setTargetAtTime(active ? norm * norm * 0.22 : 0, t, 0.1);
-    this.windFilter.frequency.setTargetAtTime(400 + norm * 1600, t, 0.1);
     this.brakeGain.gain.setTargetAtTime(active && braking && norm > 0.05 ? (grounded ? 0.12 : 0.05) : 0, t, 0.04);
   }
 

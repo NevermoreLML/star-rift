@@ -977,6 +977,7 @@ function tick(dt) {
 
 // 调试用：在控制台查看状态或手动推进帧
 window.__game = game;
+window.__fx = { THREE, bloom, boostPass, mats, car, speedLines, trails, renderer, scene };
 window.__tick = (n = 1, dt = 1 / 60) => { for (let i = 0; i < n; i++) tick(dt); };
 
 // ---------------------------------------------------------------------------
