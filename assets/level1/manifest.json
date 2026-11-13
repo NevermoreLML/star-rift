@@ -1,32 +1,34 @@
 {
-  "_说明": "把美术文件放进这个文件夹，然后在下面对应位置填上文件名（例如 \"lane_0_normal.png\"）。留空 \"\" 表示继续用游戏内置的版本。改完按 Ctrl+F5 刷新游戏就能看到。详细规格见同文件夹的 README.md。",
+  "_说明": "把美术文件放进这个文件夹，然后在下面对应位置填上文件名（例如 \"lane_0_normal.png\"）。留空 \"\" 表示继续用游戏内置的版本。改完按 Ctrl+F5 刷新游戏就能看到。详细规格见同文件夹的 README.md，素材来源和署名见 CREDITS.md。",
 
   "textures": {
-    "lane_0_normal": "",
-    "lane_1_boost": "",
-    "lane_2_slow": "",
-    "lane_3_obstacle": "",
-    "lane_4_short": "",
-    "lane_5_crumble": "",
-    "lane_6_bounce": "",
-    "wall_hazard": "",
-    "finish_checker": "",
-    "star_particle": "",
-    "shockwave": ""
+    "lane_0_normal": "textures/lane_0_normal.png",
+    "lane_1_boost": "textures/lane_1_boost.png",
+    "lane_2_slow": "textures/lane_2_slow.png",
+    "lane_3_obstacle": "textures/lane_3_obstacle.png",
+    "lane_4_short": "textures/lane_4_short.png",
+    "lane_5_crumble": "textures/lane_5_crumble.png",
+    "lane_6_bounce": "textures/lane_6_bounce.png",
+    "wall_hazard": "textures/wall_hazard.png",
+    "finish_checker": "textures/finish_checker.png",
+    "star_particle": "textures/star_particle.png",
+    "shockwave": "textures/shockwave.png"
   },
 
-  "sky": "",
+  "sky": "sky/milkyway.jpg",
   "hideProceduralStars": false,
 
   "planets": {
-    "planet_1": "",
-    "planet_1_ring": "",
-    "planet_2": "",
-    "planet_3": ""
+    "planet_1": "planets/saturn.jpg",
+    "planet_1_ring": "planets/saturn_ring.png",
+    "planet_2": "planets/neptune.jpg",
+    "planet_3": "planets/mars.jpg"
   },
 
   "car": {
-    "model": "",
+    "model": "models/hover_fighter_beetle.glb",
+    "length": 4,
+    "rotateY": 180,
     "scale": 1
   },
 

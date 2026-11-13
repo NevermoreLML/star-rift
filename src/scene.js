@@ -171,9 +171,21 @@ export async function applyBackgroundArt(bg, art, scene) {
 export async function applyCarArt(car, art) {
   const c = art.car || {};
   await each([['car', c.model]], async (key, file) => {
-    const model = await loadModel(file);
+    const loaded = await loadModel(file);
+    // 包一层，方便旋转、缩放、对齐，不改模型自己的变换
+    const model = new THREE.Group();
+    model.add(loaded);
+    if (c.rotateY) loaded.rotation.y = THREE.MathUtils.degToRad(c.rotateY);
+    let k = c.scale || 1;
+    if (c.length) {
+      // 指定了车长：按包围盒自动缩放，并把车底中心放到原点
+      const box = new THREE.Box3().setFromObject(loaded);
+      const size = box.getSize(new THREE.Vector3());
+      k *= c.length / size.z;
+      loaded.position.set(-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2);
+    }
     // 模型按游戏单位（≈米）制作；外层赛车组整体放大了 1.25 倍，这里抵消掉
-    model.scale.multiplyScalar((c.scale || 1) / car.group.scale.x);
+    model.scale.setScalar(k / car.group.scale.x);
     for (const ch of car.body.children) if (ch !== car.under) ch.visible = false;
     car.body.add(model);
     car.group.updateMatrixWorld(true);
