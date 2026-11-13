@@ -112,8 +112,8 @@ const mats = createTrackMaterials();
 const carEnv = new THREE.PMREMGenerator(renderer).fromScene(new THREE.RoomEnvironment(), 0.04).texture;
 const car = createCar(carEnv);
 scene.add(car.group);
-// 拖尾长度 = 点数（每帧记一个点），10 个点约为车身后方 1~2 个车长
-const trails = [new Trail(scene, 0xff3cf0, 10), new Trail(scene, 0xff3cf0, 10)];
+// 拖尾最多记 40 个点；实际长度由 maxLen（米）决定，见 car.trailLength
+const trails = [new Trail(scene, 0xff3cf0, 40), new Trail(scene, 0xff3cf0, 40)];
 const particles = new Particles(scene);
 const speedLines = new SpeedLines(scene);
 const audio = new SynthAudio();
@@ -773,7 +773,7 @@ function updateCarPose(dt) {
     if (!nz) return;
     if (car.trailColor) tr.color.set(car.trailColor);
     nozzleW.copy(nz).applyMatrix4(car.group.matrixWorld);
-    tr.push(nozzleW, upW, car.trailWidth ?? 0.22, (0.4 + norm * 1.2) * (car.trailIntensity ?? 1));
+    tr.push(nozzleW, upW, car.trailWidth ?? 0.22, (0.4 + norm * 1.2) * (car.trailIntensity ?? 1), car.trailLength ?? 12);
   });
   if (game.boostT > 0 && car.nozzles.length && Math.random() < 0.3) {
     particles.emit(nozzleW, fwd.clone().multiplyScalar(-10), 2, '#00a89f', 0.3, 1);

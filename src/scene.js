@@ -235,6 +235,7 @@ export async function applyCarArt(car, art) {
     if (c.trailColor) car.trailColor = c.trailColor;
     if (c.trailWidth !== undefined) car.trailWidth = c.trailWidth;
     if (c.trailIntensity !== undefined) car.trailIntensity = c.trailIntensity;
+    if (c.trailLength !== undefined) car.trailLength = c.trailLength;
   });
 }
 
@@ -294,13 +295,18 @@ export class Trail {
 
   reset() { this.pts = []; }
 
-  push(p, up, width, intensity) {
+  // maxLen：拖尾最长多少米（按实际走过的距离算，和帧率、车速无关）
+  push(p, up, width, intensity, maxLen = Infinity) {
     this.pts.unshift({ p: p.clone(), u: up.clone() });
     if (this.pts.length > this.n) this.pts.pop();
+    let dist = 0;
     for (let i = 0; i < this.n; i++) {
-      const q = this.pts[Math.min(i, this.pts.length - 1)];
+      let q = this.pts[Math.min(i, this.pts.length - 1)];
       if (!q) continue;
-      const k = 1 - i / (this.n - 1);
+      if (i > 0 && i < this.pts.length) dist += q.p.distanceTo(this.pts[i - 1].p);
+      // 超过最大长度的点都收到长度末端，并且完全透明
+      if (dist > maxLen) q = this.pts[Math.max(0, i - 1)];
+      const k = Math.min(1 - i / (this.n - 1), Math.max(0, 1 - dist / maxLen));
       const w = width * (0.3 + 0.7 * k);
       this.posArr.set([q.p.x + q.u.x * w, q.p.y + q.u.y * w, q.p.z + q.u.z * w], i * 6);
       this.posArr.set([q.p.x - q.u.x * w, q.p.y - q.u.y * w, q.p.z - q.u.z * w], i * 6 + 3);
