@@ -168,11 +168,30 @@ export async function applyBackgroundArt(bg, art, scene) {
   });
 }
 
-// 美术素材替换：赛车模型（.glb）。模型里名为 nozzle_L / nozzle_R 的空节点会作为两个尾焰的位置
+// 把模型里某个轮心附近的零件（轮胎、轮毂、胎侧文字）收进一个转轴组，之后转这个组就是转轮子
+function gatherWheel(root, center, pick) {
+  const pivot = new THREE.Group();
+  pivot.position.copy(center);
+  root.add(pivot);
+  root.updateMatrixWorld(true);
+  const meshes = [];
+  root.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  const box = new THREE.Box3(), c = new THREE.Vector3(), s = new THREE.Vector3();
+  for (const m of meshes) {
+    box.setFromObject(m);
+    if (box.getCenter(c).distanceTo(center) < pick && Math.max(...box.getSize(s).toArray()) < pick * 4) pivot.attach(m);
+  }
+  return pivot;
+}
+
+// 美术素材替换：赛车模型（.glb）。
+// 可选：wheelCenters（模型坐标里的轮心）让轮子随车速转；groundY 指定模型里地面高度；
+// trails（模型坐标里的拖尾起点，空数组表示不要拖尾）；模型里名为 nozzle_L / nozzle_R 的空节点也可作为拖尾起点
 export async function applyCarArt(car, art) {
   const c = art.car || {};
   await each([['car', c.model]], async (key, file) => {
     const loaded = await loadModel(file);
+    const wheels = (c.wheelCenters || []).map((p) => gatherWheel(loaded, new THREE.Vector3(...p), c.wheelPick || 0.3));
     // 包一层，方便旋转、缩放、对齐，不改模型自己的变换
     const model = new THREE.Group();
     model.add(loaded);
@@ -183,17 +202,37 @@ export async function applyCarArt(car, art) {
       const box = new THREE.Box3().setFromObject(loaded);
       const size = box.getSize(new THREE.Vector3());
       k *= c.length / size.z;
-      loaded.position.set(-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2);
+      const ground = c.groundY ?? box.min.y;
+      loaded.position.set(-(box.min.x + box.max.x) / 2, -ground, -(box.min.z + box.max.z) / 2);
     }
     // 模型按游戏单位（≈米）制作；外层赛车组整体放大了 1.25 倍，这里抵消掉
     model.scale.setScalar(k / car.group.scale.x);
-    for (const ch of car.body.children) if (ch !== car.under) ch.visible = false;
+    // 给模型材质加上环境反射，深色车漆在暗处也能看出高光和轮廓
+    if (car.envMap) {
+      loaded.traverse((o) => {
+        if (!o.isMesh) return;
+        for (const m of [].concat(o.material)) {
+          if (m && 'envMap' in m) { m.envMap = car.envMap; m.envMapIntensity = c.envIntensity ?? 0.8; m.needsUpdate = true; }
+        }
+      });
+    }
+    for (const ch of car.body.children) ch.visible = false;
     car.body.add(model);
     car.group.updateMatrixWorld(true);
+    // 轮子：转速 = 车速 / 轮半径；车头朝 -Z 的模型转了 180°，转向要反过来
+    car.wheels = wheels;
+    car.wheelRadius = (c.wheelRadius || 0.33) * k;
+    car.wheelDir = Math.cos(THREE.MathUtils.degToRad(c.rotateY || 0)) >= 0 ? 1 : -1;
+    const toCar = (v) => car.group.worldToLocal(v);
+    if (Array.isArray(c.trails)) {
+      car.nozzles.length = 0;
+      for (const p of c.trails) car.nozzles.push(toCar(loaded.localToWorld(new THREE.Vector3(...p))));
+    }
     ['nozzle_L', 'nozzle_R'].forEach((name, i) => {
       const node = model.getObjectByName(name);
-      if (node) car.nozzles[i].copy(car.group.worldToLocal(node.getWorldPosition(new THREE.Vector3())));
+      if (node) car.nozzles[i] = toCar(node.getWorldPosition(new THREE.Vector3()));
     });
+    if (c.trailColor) car.trailColor = c.trailColor;
   });
 }
 
@@ -216,22 +255,13 @@ export function createCar(envMap) {
   const nozzles = sleek.nozzles.map((p) => p.clone().divideScalar(S));
   const engineMat = sleek.engineMat;
 
-  // 底部悬浮光
-  const under = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.8, 3.2),
-    new THREE.MeshBasicMaterial({ color: 0x18c8ff, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false })
-  );
-  under.rotation.x = -Math.PI / 2;
-  under.position.y = 0.06;
-  body.add(under);
-
   // 车灯放在车头前方，照亮前面的赛道，不直接打在车身上
   const headlight = new THREE.PointLight(0x66e8ff, 4, 20, 2);
   headlight.position.set(0, 0.8, 5);
   group.add(headlight);
 
   group.scale.setScalar(1.25);
-  return { group, body, nozzles, engineMat, under };
+  return { group, body, nozzles, engineMat, envMap, wheels: [], wheelRadius: 0.33, wheelDir: 1 };
 }
 
 // ---------------------------------------------------------------------------

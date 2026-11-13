@@ -64,6 +64,120 @@ function strip(points, radius, mat) {
   return new THREE.Mesh(new THREE.TubeGeometry(curve, 48, radius, 8, false), mat);
 }
 
+// 一个车轮：黑色轮胎 + 缎面银色五辐轮毂，绕自身 x 轴转动
+function wheel(rubber, rim) {
+  const g = new THREE.Group();
+  const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.37, 0.37, 0.32, 40, 1), rubber);
+  tire.rotation.z = Math.PI / 2;
+  g.add(tire);
+  // 轮毂：深色底盘 + 五根银色辐条 + 银色外圈和中心盖，转动时看得出来
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.33, 40, 1), rubber);
+  base.rotation.z = Math.PI / 2;
+  g.add(base);
+  for (const side of [-1, 1]) {
+    const lip = new THREE.Mesh(new THREE.TorusGeometry(0.265, 0.018, 8, 48), rim);
+    lip.rotation.y = Math.PI / 2;
+    lip.position.x = side * 0.165;
+    g.add(lip);
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.02, 20), rim);
+    cap.rotation.z = Math.PI / 2;
+    cap.position.x = side * 0.17;
+    g.add(cap);
+    for (let k = 0; k < 5; k++) {
+      const holder = new THREE.Group();
+      holder.rotation.x = (k / 5) * Math.PI * 2;
+      const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.22, 0.045), rim);
+      spoke.position.set(side * 0.168, 0.135, 0);
+      holder.add(spoke);
+      g.add(holder);
+    }
+  }
+  return g;
+}
+
+// 原创流线型超跑（参考布加迪风格：双色车身、侧面 C 形腰线、宽低车身、横贯尾灯），带四个会转的轮子
+export function buildHypercar(envMap) {
+  const car = new THREE.Group();
+  const paintFront = new THREE.MeshPhysicalMaterial({ color: 0x0f2152, metalness: 0.25, roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.05, envMap, envMapIntensity: 0.9 });
+  const paintRear = new THREE.MeshPhysicalMaterial({ color: 0x5a9be6, metalness: 0.25, roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.05, envMap, envMapIntensity: 0.9 });
+  const satin = new THREE.MeshStandardMaterial({ color: 0xc4cad6, metalness: 0.8, roughness: 0.35, envMap, envMapIntensity: 0.8 });
+  const black = new THREE.MeshStandardMaterial({ color: 0x0c0d12, metalness: 0.2, roughness: 0.6, envMap, envMapIntensity: 0.4 });
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x121214, metalness: 0, roughness: 0.9 });
+  const glass = new THREE.MeshPhysicalMaterial({ color: 0x0b1626, metalness: 0.4, roughness: 0.05, clearcoat: 1, transparent: true, opacity: 0.9, envMap, envMapIntensity: 1.2 });
+  const headLed = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xeaf4ff).multiplyScalar(1.6) });
+  const tailLed = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff2a3a).multiplyScalar(1.8) });
+
+  // ---- 车身：车尾一段浅蓝、车头一段深蓝，在车门处衔接 ----
+  const S = [
+    { z: -2.25, w: 0.86, h: 0.3, hb: 0.2, y: 0.62, n: 3.6 },
+    { z: -1.95, w: 0.97, h: 0.38, hb: 0.26, y: 0.62, n: 3.8 },
+    { z: -1.25, w: 1.02, h: 0.42, hb: 0.3, y: 0.6, n: 3.8 },
+    { z: -0.45, w: 0.98, h: 0.42, hb: 0.3, y: 0.58, n: 3.5 },
+    { z: 0.1, w: 0.96, h: 0.4, hb: 0.3, y: 0.57, n: 3.4 },
+    { z: 0.6, w: 0.95, h: 0.35, hb: 0.3, y: 0.55, n: 3.3 },
+    { z: 1.25, w: 0.93, h: 0.27, hb: 0.28, y: 0.5, n: 3.2 },
+    { z: 1.8, w: 0.87, h: 0.19, hb: 0.24, y: 0.45, n: 3 },
+    { z: 2.15, w: 0.7, h: 0.12, hb: 0.18, y: 0.4, n: 2.6 },
+    { z: 2.32, w: 0.42, h: 0.06, hb: 0.1, y: 0.38, n: 2.2 },
+  ];
+  const split = 4; // 在 z=0.1 处分色
+  car.add(new THREE.Mesh(loft(S.slice(0, split + 1)), paintRear));
+  car.add(new THREE.Mesh(loft(S.slice(split)), paintFront));
+
+  // ---- 座舱：深色玻璃，泪滴形 ----
+  const cabin = loft([
+    { z: -0.95, w: 0.5, h: 0.02, hb: 0.06, y: 0.97, n: 2.6 },
+    { z: -0.45, w: 0.62, h: 0.19, hb: 0.2, y: 1.0, n: 2.8 },
+    { z: 0.3, w: 0.64, h: 0.19, hb: 0.2, y: 0.98, n: 2.8 },
+    { z: 0.9, w: 0.58, h: 0.09, hb: 0.15, y: 0.9, n: 2.6 },
+    { z: 1.18, w: 0.48, h: 0.02, hb: 0.06, y: 0.8, n: 2.4 },
+  ], 32);
+  car.add(new THREE.Mesh(cabin, glass));
+
+  // ---- 侧面 C 形腰线：缎面银色，从车顶后方弯下再向前收 ----
+  for (const sx of [-1, 1]) {
+    car.add(strip([
+      [sx * 0.86, 0.93, 0.45], [sx * 0.95, 0.9, -0.3], [sx * 1.0, 0.72, -0.78],
+      [sx * 1.015, 0.48, -0.64], [sx * 0.995, 0.37, 0.1], [sx * 0.97, 0.35, 0.7],
+    ], 0.028, satin));
+  }
+
+  // ---- 车轮：前后各两个 ----
+  const wheels = [];
+  for (const [x, z] of [[-0.9, 1.38], [0.9, 1.38], [-0.92, -1.32], [0.92, -1.32]]) {
+    const w = wheel(rubber, satin);
+    w.position.set(x, 0.37, z);
+    car.add(w);
+    wheels.push(w);
+  }
+
+  // ---- 车头：两道细长 LED 大灯 + 下方深色椭圆进气口 ----
+  for (const sx of [-1, 1]) {
+    car.add(strip([[sx * 0.42, 0.53, 2.12], [sx * 0.6, 0.55, 2.0], [sx * 0.78, 0.56, 1.82]], 0.025, headLed));
+  }
+  const intake = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 12), black);
+  intake.scale.set(0.34, 0.11, 0.08);
+  intake.position.set(0, 0.36, 2.22);
+  car.add(intake);
+
+  // ---- 车尾：横贯整车的红色尾灯条 + 小尾翼 + 底部扩散器和双排气 ----
+  car.add(strip([[-0.82, 0.74, -2.2], [0, 0.76, -2.27], [0.82, 0.74, -2.2]], 0.03, tailLed));
+  car.add(new THREE.Mesh(wing([[-0.78, -1.9], [0.78, -1.9], [0.72, -2.22], [-0.72, -2.22]], 0.035, 0.94), paintRear));
+  const diffuser = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.16, 0.3), black);
+  diffuser.position.set(0, 0.36, -2.15);
+  car.add(diffuser);
+  const nozzles = [];
+  for (const sx of [-1, 1]) {
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.12, 20), satin);
+    pipe.rotation.x = Math.PI / 2;
+    pipe.position.set(sx * 0.2, 0.4, -2.3);
+    car.add(pipe);
+    nozzles.push(new THREE.Vector3(sx * 0.2, 0.4, -2.36));
+  }
+
+  return { car, nozzles, wheels, engineMat: tailLed };
+}
+
 export function buildSleekCar(envMap) {
   const car = new THREE.Group();
 

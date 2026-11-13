@@ -751,21 +751,28 @@ function updateCarPose(dt) {
     car.body.position.copy(FLIP_PIVOT).applyQuaternion(car.body.quaternion).negate().add(FLIP_PIVOT);
   } else {
     car.body.quaternion.identity();
-    car.body.position.set(0, game.air ? 0 : Math.sin(game.clock * 18) * 0.02, 0);
+    // 有轮子的车贴地跑，不做悬浮的上下轻晃
+    const bob = car.wheels.length || game.air ? 0 : Math.sin(game.clock * 18) * 0.02;
+    car.body.position.set(0, bob, 0);
   }
+
+  // 轮子随车速转动（空中也继续空转）
+  for (const w of car.wheels) w.rotation.x += (game.v * dt / car.wheelRadius) * car.wheelDir;
 
   // 尾焰
   const norm = game.v / vmaxAt(game.s);
   car.engineMat.color.setRGB(0.24, 0.78, 1.0).multiplyScalar(0.9 + norm * 1.3); // 越快喷口越亮
-  // 连跳能量满时车底光晕跟着闪
-  car.under.material.opacity = game.energy >= 1 ? 0.45 + 0.35 * Math.sin(game.clock * 9) : 0.35;
   car.group.updateMatrixWorld();
   const upW = up.clone();
-  car.nozzles.forEach((nz, i) => {
+  trails.forEach((tr, i) => {
+    const nz = car.nozzles[i];
+    tr.mesh.visible = !!nz && !game.lost;
+    if (!nz) return;
+    if (car.trailColor) tr.color.set(car.trailColor);
     nozzleW.copy(nz).applyMatrix4(car.group.matrixWorld);
-    trails[i].push(nozzleW, upW, 0.22, 0.4 + norm * 1.2);
+    tr.push(nozzleW, upW, 0.22, 0.4 + norm * 1.2);
   });
-  if (game.boostT > 0 && Math.random() < 0.3) {
+  if (game.boostT > 0 && car.nozzles.length && Math.random() < 0.3) {
     particles.emit(nozzleW, fwd.clone().multiplyScalar(-10), 2, '#00a89f', 0.3, 1);
   }
 }

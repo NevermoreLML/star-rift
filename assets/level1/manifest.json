@@ -26,10 +26,16 @@
   },
 
   "car": {
-    "model": "",
-    "length": 4,
+    "model": "models/mercedes_f1_w14.glb",
+    "length": 5.2,
     "rotateY": 0,
-    "scale": 1
+    "scale": 1,
+    "groundY": -0.01,
+    "wheelCenters": [[0.74, 0.32, 2.42], [-0.7, 0.32, 2.42], [0.73, 0.32, -0.72], [-0.69, 0.32, -0.72]],
+    "wheelRadius": 0.33,
+    "trails": [[0.46, 0.98, -1.28], [-0.46, 0.98, -1.28]],
+    "trailColor": "#4a6a88",
+    "envIntensity": 0.4
   },
 
   "ui": {
