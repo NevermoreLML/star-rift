@@ -571,6 +571,20 @@ function groundJump() {
   audio.jump();
 }
 
+// 赛道提示：新赛道第一次出现前说明它的作用；大空隙前提醒走加速赛道或连跳
+function trackHints() {
+  for (const sec of game.track.upcoming(game.s)) {
+    if (sec.intro !== undefined && !sec.introShown && sec.s0 - game.s < 140) {
+      sec.introShown = true;
+      showTip(t('intro' + sec.intro), 2.6);
+    }
+    if (sec.bigGapNext && !sec.cliffShown && game.s > sec.s0 && sec.s1 - game.s < 200) {
+      sec.cliffShown = true;
+      showTip(t('tipCliff'), 2.4);
+    }
+  }
+}
+
 function physicsStep(dt) {
   const tr = game.track;
   const vmax = vmaxAt(game.s);
@@ -679,6 +693,7 @@ function physicsStep(dt) {
   }
 
   game.boostT -= dt;
+  trackHints();
   game.s += game.v * dt;
 
   // 障碍碰撞
