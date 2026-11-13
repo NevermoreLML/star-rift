@@ -773,7 +773,9 @@ function updateCarPose(dt) {
     if (!nz) return;
     if (car.trailColor) tr.color.set(car.trailColor);
     nozzleW.copy(nz).applyMatrix4(car.group.matrixWorld);
-    tr.push(nozzleW, upW, car.trailWidth ?? 0.22, (0.4 + norm * 1.2) * (car.trailIntensity ?? 1), car.trailLength ?? 12);
+    // 拖尾长度随车速变长：加速平台的最高速度（极速 × 1.4）时达到上限 trailLength
+    const lenK = THREE.MathUtils.clamp(norm / 1.4, 0, 1);
+    tr.push(nozzleW, upW, car.trailWidth ?? 0.22, (0.4 + norm * 1.2) * (car.trailIntensity ?? 1), (car.trailLength ?? 12) * lenK);
   });
   if (game.boostT > 0 && car.nozzles.length && Math.random() < 0.3) {
     particles.emit(nozzleW, fwd.clone().multiplyScalar(-10), 2, '#00a89f', 0.3, 1);
