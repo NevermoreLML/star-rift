@@ -112,8 +112,8 @@ const mats = createTrackMaterials();
 const carEnv = new THREE.PMREMGenerator(renderer).fromScene(new THREE.RoomEnvironment(), 0.04).texture;
 const car = createCar(carEnv);
 scene.add(car.group);
-// 拖尾点数多一些，细拖尾才能拉得够长，像划破气流的丝线
-const trails = [new Trail(scene, 0xff3cf0, 30), new Trail(scene, 0xff3cf0, 30)];
+// 拖尾长度 = 点数（每帧记一个点），10 个点约为车身后方 1~2 个车长
+const trails = [new Trail(scene, 0xff3cf0, 10), new Trail(scene, 0xff3cf0, 10)];
 const particles = new Particles(scene);
 const speedLines = new SpeedLines(scene);
 const audio = new SynthAudio();
