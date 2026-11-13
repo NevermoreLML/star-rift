@@ -1,10 +1,13 @@
 // 全部用 Web Audio 实时合成：引擎、风噪、刹车、音效、背景电子乐
 const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+const MUSIC_VOL = 0.32;
+const SFX_VOL = 0.9;
 
 export class SynthAudio {
   constructor() {
     this.ctx = null;
-    this.muted = false;
+    this.musicOn = true; // 背景音乐开关
+    this.sfxOn = true;   // 音效开关（引擎、风噪、跳跃、爆炸等）
     this.musicLevel = 0; // 0 菜单（只有铺底）, 1 比赛（完整编曲）
   }
 
@@ -18,9 +21,9 @@ export class SynthAudio {
     comp.threshold.value = -14;
     comp.ratio.value = 4;
     comp.connect(ctx.destination);
-    this.master = this.gain(this.muted ? 0 : 0.85, comp);
-    this.sfx = this.gain(0.9, this.master);
-    this.music = this.gain(0.32, this.master);
+    this.master = this.gain(0.85, comp);
+    this.sfx = this.gain(this.sfxOn ? SFX_VOL : 0, this.master);
+    this.music = this.gain(this.musicOn ? MUSIC_VOL : 0, this.master);
 
     const len = ctx.sampleRate * 2;
     this.noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
@@ -60,9 +63,14 @@ export class SynthAudio {
   osc(type, f, dest) { const o = this.ctx.createOscillator(); o.type = type; o.frequency.value = f; o.connect(dest); o.start(); return o; }
   loopNoise(dest) { const s = this.ctx.createBufferSource(); s.buffer = this.noiseBuf; s.loop = true; s.connect(dest); s.start(); return s; }
 
-  setMuted(m) {
-    this.muted = m;
-    if (this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.85, this.ctx.currentTime, 0.05);
+  setMusicOn(on) {
+    this.musicOn = on;
+    if (this.ctx) this.music.gain.setTargetAtTime(on ? MUSIC_VOL : 0, this.ctx.currentTime, 0.05);
+  }
+
+  setSfxOn(on) {
+    this.sfxOn = on;
+    if (this.ctx) this.sfx.gain.setTargetAtTime(on ? SFX_VOL : 0, this.ctx.currentTime, 0.05);
   }
 
   // norm: 速度/极速，grounded: 是否在地面，active: 是否在比赛中

@@ -137,7 +137,13 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.code === 'Escape') onEscape();
   else if (e.code === 'KeyR' && (game.state === 'over' || game.state === 'finished' || game.state === 'paused')) startGame(game.mode);
-  else if (e.code === 'KeyM') { audio.setMuted(!audio.muted); showTip(t(audio.muted ? 'tipMuted' : 'tipUnmuted')); }
+  else if (e.code === 'KeyM') {
+    // M：有任何一个开着就全关，全关时就全开
+    const on = !(audio.musicOn || audio.sfxOn);
+    setSound('music', on);
+    setSound('sfx', on);
+    showTip(t(on ? 'tipUnmuted' : 'tipMuted'));
+  }
   else if (game.state === 'menu' && e.code === 'Digit1') requestStart('race');
   else if (game.state === 'menu' && e.code === 'Digit2') requestStart('endless');
 });
@@ -210,6 +216,25 @@ function refreshMenuBest() {
   const br = store.get('bestRace'), be = store.get('bestEndless');
   document.getElementById('best-race').textContent = br ? t('bestVal', { v: fmtTime(br) }) : t('bestNone');
   document.getElementById('best-endless').textContent = be ? t('bestVal', { v: `${Math.floor(be)} m` }) : t('bestNone');
+}
+
+// ---------------------------------------------------------------------------
+// 音乐 / 音效开关（左下角两个按钮，选择记在本机）
+// ---------------------------------------------------------------------------
+const soundBtns = { music: document.getElementById('btn-music'), sfx: document.getElementById('btn-sfx') };
+
+function setSound(kind, on) {
+  if (kind === 'music') audio.setMusicOn(on); else audio.setSfxOn(on);
+  soundBtns[kind].setAttribute('aria-pressed', String(on));
+  store.set(kind + 'On', on);
+}
+
+for (const kind of ['music', 'sfx']) {
+  setSound(kind, store.get(kind + 'On') !== false);
+  soundBtns[kind].addEventListener('click', (e) => {
+    setSound(kind, !(kind === 'music' ? audio.musicOn : audio.sfxOn));
+    e.currentTarget.blur(); // 不留焦点，免得比赛中按空格又触发这个按钮
+  });
 }
 
 // ---------------------------------------------------------------------------
