@@ -809,7 +809,7 @@ function updateCamera(dt) {
   if (!game.camFrozen) {
     const ch = Math.max(-1, game.camH);
     const high = Math.max(0, ch - 2.3); // 超过普通跳跃高度的部分（连跳/弹射）
-    path.point(game.s - 9 - high * 0.8, game.camA, 3.2 + ch * 0.55 + high * 0.45, camera.position);
+    path.point(game.s - 11 - high * 0.8, game.camA, 3.6 + ch * 0.55 + high * 0.45, camera.position); // 固定镜头，离车稍远一点
     path.point(game.s, game.camA, 0, tmpV);
     const up = path.r.clone().negate();
     game.camUp.lerp(up, 1 - Math.exp(-dt * 7)).normalize();

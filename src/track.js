@@ -41,11 +41,16 @@ const laneDist = (a, b) => Math.min((a - b + LANES) % LANES, (b - a + LANES) % L
 // Path：在太空中弯曲的管道中心线 + 平行移动标架 + 扭转角
 // ---------------------------------------------------------------------------
 export class Path {
-  constructor(seed, difficultyFn) {
+  // curveAmpFn(s)：弯道强度（0 = 笔直，1 = 断崖阶段的强度），由赛道按难度阶段提供
+  constructor(seed, difficultyFn, curveAmpFn = () => 1) {
     const rnd = mulberry32(seed * 7 + 13);
     this.ph = Array.from({ length: 8 }, () => rnd() * Math.PI * 2);
     this.diff = difficultyFn;
-    const t0 = this.heading(0);
+    this.curveAmp = curveAmpFn;
+    this.calm = []; // 拉直区间 [起点, 终点]：大空隙前后不弯，保证关键跳跃看得见
+    this.YAW = [0];
+    this.PITCH = [0];
+    const t0 = this.dir(0, 0);
     const n0 = new THREE.Vector3(0, -1, 0);
     n0.addScaledVector(t0, -n0.dot(t0)).normalize();
     this.P = [new THREE.Vector3()];
@@ -57,12 +62,27 @@ export class Path {
     this.r = new THREE.Vector3();
   }
 
-  heading(s) {
-    const ph = this.ph;
-    const ramp = clamp(s / 500, 0, 1);
-    const yaw = ramp * (1.4 * Math.sin(s * 0.0012 + ph[0]) + 0.7 * Math.sin(s * 0.0029 + ph[1]));
-    const pitch = ramp * (0.25 * Math.sin(s * 0.0016 + ph[2]) + 0.14 * Math.sin(s * 0.0037 + ph[3]));
+  dir(yaw, pitch) {
     return new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
+  }
+
+  // 拉直程度：在拉直区间里弯道强度降到 15%，边缘 30 米平滑过渡
+  calmFactor(s) {
+    let k = 1;
+    for (const [a, b] of this.calm) {
+      const edge = Math.min(clamp((s - (a - 30)) / 30, 0, 1), clamp(((b + 30) - s) / 30, 0, 1));
+      k = Math.min(k, 1 - 0.85 * edge);
+    }
+    return k;
+  }
+
+  // 每米转多少弧度（左右、上下），弯道强度 × 拉直程度
+  bendRates(s) {
+    const ph = this.ph;
+    const amp = this.curveAmp(s) * this.calmFactor(s) * clamp(s / 400, 0, 1);
+    const yawRate = amp * 0.0038 * (0.45 * Math.sin(s * 0.0012 + ph[0]) + 0.55 * Math.sin(s * 0.0029 + ph[1]));
+    const pitchRate = amp * 0.0018 * (Math.sin(s * 0.0016 + ph[2]) + 0.6 * Math.sin(s * 0.0037 + ph[3]));
+    return [yawRate, pitchRate];
   }
 
   twistRate(s) {
@@ -76,7 +96,13 @@ export class Path {
   ensure(s) {
     while ((this.P.length - 1) * STEP < s + 2) {
       const i = this.P.length - 1;
-      const tNext = this.heading((i + 1) * STEP);
+      // 方向按弯道速率一点点累加；俯仰角带一点回正，不会越爬越陡
+      const [yr, pr] = this.bendRates((i + 0.5) * STEP);
+      const yaw = this.YAW[i] + yr * STEP;
+      const pitch = this.PITCH[i] + (pr - 0.0025 * this.PITCH[i]) * STEP;
+      this.YAW.push(yaw);
+      this.PITCH.push(pitch);
+      const tNext = this.dir(yaw, pitch);
       const p = this.P[i].clone().addScaledVector(this.T[i].clone().add(tNext).normalize(), STEP);
       const n = this.N[i].clone();
       n.addScaledVector(tNext, -n.dot(tNext)).normalize();
@@ -320,7 +346,7 @@ export class Track {
     this.mats = mats;
     this.rand = mulberry32(seed);
     this.raceLength = mode === 'race' ? 7200 : Infinity;
-    this.path = new Path(seed, (s) => this.difficulty(s));
+    this.path = new Path(seed, (s) => this.difficulty(s), (s) => this.curveAmp(s));
     this.sections = [];
     this.genS = 0;
     this.finishS = Infinity;
@@ -337,6 +363,66 @@ export class Track {
   difficulty(s) {
     if (this.mode === 'race') return clamp((s - 300) / (this.raceLength - 700), 0, 1);
     return clamp((s - 300) / 9000, 0, 1.35);
+  }
+
+  // 弯道强度随阶段增加：热身和认识阶段很缓，组合阶段中等，断崖阶段最急
+  curveAmp(x) {
+    const P = (a, b) => clamp((x - a) / (b - a), 0, 1);
+    if (x < 800) return 0.3;
+    if (x < 3000) return lerp(0.3, 0.45, P(800, 3000));
+    if (x < 5000) return lerp(0.45, 0.8, P(3000, 5000));
+    if (x < 7200) return lerp(0.8, 1.0, P(5000, 7200));
+    return lerp(1.0, 1.2, P(7200, 16000));
+  }
+
+  // 每条赛道在节末处是“山谷”还是“山顶”：
+  // 管道往某个方向弯时，站在弯道外侧的赛道看前方是往上抬（看得见），内侧是往下沉（被挡住）。
+  // 返回 { bend: 弯得多厉害（弧度）, score: 每条赛道的分数，正 = 外侧/看得见，负 = 内侧/看不见 }
+  valleyScores(s) {
+    const t1 = this.path.frame(s - 40).t.clone();
+    const t2 = this.path.frame(s + 20).t.clone();
+    const k = t2.sub(t1);
+    const bend = k.length();
+    if (bend > 1e-6) k.divideScalar(bend);
+    const score = [];
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i < LANES; i++) {
+      this.path.point(s, i + 0.5, 0, tmp);
+      score.push(-k.dot(this.path.r));
+    }
+    return { bend, score };
+  }
+
+  // 用加速赛道引导视野：节末前方有弯时，把加速赛道挪到弯道外侧（看得见下一段的那一侧），
+  // 玩家被加速吸引过去，往下沉的弯对他就变成了往上抬。
+  // 前中期几乎总是这样引导，并且内侧（看不见）的赛道不放陷阱；断崖阶段引导变少，
+  // 有时故意把加速放在内侧：更快，但要冒看不见落点的风险
+  lureByBend(types, present, s1, stage, keepType) {
+    const { bend, score } = this.valleyScores(s1);
+    if (bend < 0.05) return; // 基本是直的，不用引导
+    const r = this.rand;
+    const lanesNow = present.map((ok, i) => (ok ? i : -1)).filter((i) => i >= 0);
+    const lure = { warm: 0.95, teach: 0.95, combo: 0.75, cliff: 0.45, beyond: 0.35 }[stage];
+    const nb = types.filter((t, i) => present[i] && t === TYPE.BOOST).length;
+    let order = null;
+    if (r() < lure) order = [...lanesNow].sort((a, b) => score[b] - score[a]); // 外侧优先
+    else if ((stage === 'cliff' || stage === 'beyond') && r() < 0.5) order = [...lanesNow].sort((a, b) => score[a] - score[b]); // 冒险：内侧
+    if (order) {
+      for (const i of lanesNow) if (types[i] === TYPE.BOOST) types[i] = TYPE.NORMAL;
+      // 挑分数靠前、彼此不挨着的赛道放加速
+      const picked = [];
+      for (const i of order) {
+        if (picked.length >= nb) break;
+        if (picked.every((p) => laneDist(p, i) >= 2)) picked.push(i);
+      }
+      for (const i of picked) types[i] = TYPE.BOOST;
+    }
+    // 往下沉的弯先做得简单：前期内侧赛道不放陷阱，组合阶段一半
+    const hazard = [TYPE.OBSTACLE, TYPE.CRUMBLE, TYPE.SHORT];
+    const calmInner = { warm: 1, teach: 1, combo: 0.5 }[stage] || 0;
+    for (const i of lanesNow) {
+      if (score[i] < -0.35 && hazard.includes(types[i]) && types[i] !== keepType && r() < calmInner) types[i] = TYPE.NORMAL;
+    }
   }
 
   // 按权重随机挑一种赛道类型，w：[[类型, 权重], ...]
@@ -465,6 +551,8 @@ export class Track {
     let bigGapNext = 0;
     if (!first && !big && !isFinish && P.bigGap && r() < P.bigGap.chance && s1 < this.raceLength - 600) {
       bigGapNext = lerp(P.bigGap.min, P.bigGap.max, r());
+      // 大空隙前后把管道拉直，关键跳跃一定看得见落点
+      this.path.calm.push([s1 - 50, s1 + bigGapNext + 70]);
     }
 
     // 哪些赛道存在
@@ -505,6 +593,8 @@ export class Track {
         // 加速是核心：每一节都至少有一条加速赛道
         types[lanesNow[Math.floor(r() * lanesNow.length)]] = TYPE.BOOST;
       }
+      // 认识阶段正在学的那种赛道不改，保证新类型能被看到
+      if (!bigGapNext && !big) this.lureByBend(types, present, s1, P.st.name, P.st.name === 'teach' ? INTRO[P.st.intro] : -1);
     }
 
     const lanes = new Array(LANES).fill(null);
