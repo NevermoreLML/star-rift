@@ -119,6 +119,7 @@ h2 { margin: 0 0 20px; font-size: 34px; font-weight: 900; letter-spacing: 0.1em;
 .modes button:hover { transform: translateY(-2px); border-color: var(--cyan); box-shadow: 0 0 24px rgba(0, 255, 240, 0.3); }
 .modes b { font-size: 22px; }
 .modes small { color: var(--dim); font-size: 13px; }
+.modes .lb-tag { font-style: normal; font-size: 12px; font-weight: 700; color: #ffd76a; border: 1px solid rgba(255, 215, 106, 0.5); border-radius: 999px; padding: 2px 10px; align-self: flex-start; }
 .modes em { font-style: normal; font-family: 'Orbitron'; font-size: 13px; color: var(--cyan); }
 .modes kbd { position: absolute; top: 14px; right: 14px; }
 
