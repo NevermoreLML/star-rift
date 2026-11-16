@@ -305,8 +305,9 @@ export class Trail {
       if (!q) continue;
       if (i > 0 && i < this.pts.length) dist += q.p.distanceTo(this.pts[i - 1].p);
       // 超过最大长度的点都收到长度末端，并且完全透明
-      if (dist > maxLen) q = this.pts[Math.max(0, i - 1)];
-      const k = Math.min(1 - i / (this.n - 1), Math.max(0, 1 - dist / maxLen));
+      if (dist > maxLen) q = this.pts[Math.min(Math.max(0, i - 1), this.pts.length - 1)];
+      // 车速为 0 时 maxLen 为 0，0/0 会产生 NaN，直接当作完全透明
+      const k = maxLen > 0 ? Math.min(1 - i / (this.n - 1), Math.max(0, 1 - dist / maxLen)) : 0;
       const w = width * (0.3 + 0.7 * k);
       this.posArr.set([q.p.x + q.u.x * w, q.p.y + q.u.y * w, q.p.z + q.u.z * w], i * 6);
       this.posArr.set([q.p.x - q.u.x * w, q.p.y - q.u.y * w, q.p.z - q.u.z * w], i * 6 + 3);

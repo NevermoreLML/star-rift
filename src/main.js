@@ -1,7 +1,8 @@
 import * as THREE from './lib.js';
 import { EffectComposer, RenderPass, UnrealBloomPass, ShaderPass, OutputPass } from './lib.js';
-import { Track, TYPE, TYPE_COLORS, LANES, LANE_ANG, WALL_H, createTrackMaterials, wrapLane, laneIndex, applyTrackArt } from './track.js';
+import { Track, TYPE, TYPE_COLORS, LANES, LANE_ANG, WALL_H, createTrackMaterials, wrapLane, laneIndex, applyTrackArt, TRACK_STYLE } from './track.js';
 import { createBackground, createCar, Trail, Particles, SpeedLines, STAR_TEX, applyBackgroundArt, applyCarArt } from './scene.js';
+import { isRingsTheme, setupRingsTheme } from './themeRings.js';
 import { loadManifest, loadImage, loadTexture, swapImage, each, ASSET_BASE } from './assets.js';
 import { SynthAudio } from './audio.js';
 import { t, getLang, setLang, applyI18n } from './i18n.js';
@@ -259,6 +260,7 @@ function setNickname(raw) {
   if (v !== nickname) {
     nickname = v;
     store.set('nick', v);
+    board.myName = v;
     board.rename(v);
   }
   return true;
@@ -295,16 +297,18 @@ nickModalInput.addEventListener('keydown', (e) => {
   else if (e.code === 'Escape') { e.preventDefault(); closeNickModal(false); }
 });
 
-const lbView = { mode: 'race' };
+const lbView = { mode: 'endless' };
 const board = new Leaderboard(() => renderBoard());
+board.myName = nickname;
 
-// 只显示全球榜；全球榜连不上时自动改用本机成绩
+// 生存模式显示全球榜（连不上时改用本机成绩）；竞速只有本机榜
 function renderBoard() {
-  const scope = board.hasGlobal ? 'global' : 'local';
+  const global = board.isGlobal(lbView.mode);
+  const scope = global && board.status !== 'error' ? 'global' : 'local';
   document.querySelectorAll('#lb-mode button').forEach((b) => b.classList.toggle('on', b.dataset.lbmode === lbView.mode));
 
   let note = '';
-  if (board.status === 'local') note = t('lbLocalOnly');
+  if (!global) note = t('lbRaceLocal');
   else if (board.status === 'error') note = t('lbError');
   else if (board.status === 'loading') note = t('lbLoading');
   ui.lbNote.textContent = note;
@@ -320,7 +324,7 @@ function renderBoard() {
   }
   rows.slice(0, scope === 'global' ? 50 : 10).forEach((r, i) => {
     const li = document.createElement('li');
-    const isMe = scope === 'global' && board.uid && r.id === board.uid;
+    const isMe = scope === 'global' && board.isMe(r);
     if (isMe) li.className = 'me';
     const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = i + 1;
     const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.name;
@@ -373,7 +377,7 @@ function toMenu() {
   trails.forEach((t) => { t.reset(); t.mesh.visible = false; });
   refreshMenuBest();
   renderBoard();
-  if (board.status === 'live') board.refresh();
+  if (board.status !== 'off') board.refresh();
   demoTrack();
 }
 
@@ -437,7 +441,7 @@ function endRun(finished) {
   show(ui.result, true);
   if (score > 0) {
     r.uploading = true;
-    board.submit(mode, nickname, score).then((out) => {
+    board.submit(mode, nickname, score, { time: game.time }).then((out) => {
       r.submit = out;
       r.uploading = false;
       if (lastResult === r) renderResult();
@@ -602,7 +606,13 @@ function physicsStep(dt) {
     return;
   }
 
-  game.a = wrapLane(game.a + steer * (game.air ? PHYS.STEER_AIR : PHYS.STEER_GROUND) * dt);
+  let nextA = wrapLane(game.a + steer * (game.air ? PHYS.STEER_AIR : PHYS.STEER_GROUND) * dt);
+  // 陨石外表面模式：在地面上开到陨石边缘就按不过去（空中可以左右移动去对准下一块）
+  if (TRACK_STYLE.outside && !game.air && steer) {
+    const edge = nextA + steer * PHYS.CAR_HALF_W;
+    if (!tr.laneAt(game.s, laneIndex(edge)) && tr.laneAt(game.s, laneIndex(game.a))) nextA = game.a;
+  }
+  game.a = nextA;
 
   if (!game.air) {
     const tile = supportAt(game.s, game.a);
@@ -732,6 +742,7 @@ const FLIP_PIVOT = new THREE.Vector3(0, 0.4, 0); // 横滚绕车身中心转
 
 function shortestLaneDelta(from, to) {
   let d = to - from;
+  if (TRACK_STYLE.outside) return d; // 外表面模式赛道不首尾相接
   if (d > LANES / 2) d -= LANES;
   if (d < -LANES / 2) d += LANES;
   return d;
@@ -843,7 +854,9 @@ const tunnelUvTarget = new THREE.Vector2();
 
 function updateTunnelFocus(dt) {
   camera.updateMatrixWorld();
-  tunnelPt.copy(game.track.path.frame(game.s + 60).p);
+  // 管道模式：前方管道中轴线；外表面模式：前方赛道上空一点
+  if (TRACK_STYLE.outside) game.track.path.point(game.s + 60, game.camA, 2, tunnelPt);
+  else tunnelPt.copy(game.track.path.frame(game.s + 60).p);
   const k = 1 - Math.exp(-dt * 6);
   const ndc = tmpV.copy(tunnelPt).project(camera);
   if (ndc.z < 1) {
@@ -997,6 +1010,7 @@ function tick(dt) {
   if (st === 'paused' || st === 'menu') audio.setEngine(0, true, false, false);
 
   particles.update(dt);
+  if (theme && game.track) theme.update(dt, game.track.path, game.s);
   updateShockwave(dt);
   bg.update(camera.position, game.clock);
   composer.render();
@@ -1013,7 +1027,7 @@ window.__tick = (n = 1, dt = 1 / 60) => { for (let i = 0; i < n; i++) tick(dt); 
 async function applyArt() {
   const art = await loadManifest();
   const tx = art.textures || {};
-  await applyTrackArt(mats, art);
+  if (!theme) await applyTrackArt(mats, art); // 光环主题用自己的陨石材质
   await applyBackgroundArt(bg, art, scene);
   await applyCarArt(car, art);
   await each([['star_particle', tx.star_particle]], async (key, file) => swapImage(STAR_TEX, await loadImage(file)));
@@ -1036,6 +1050,9 @@ async function applyArt() {
     document.head.append(link);
   });
 }
+
+// 画面主题：网址加 ?theme=rings 是 J1407b 光环主题，要在生成第一条赛道之前设置好
+const theme = isRingsTheme() ? setupRingsTheme({ scene, mats, bg, bloom }) : null;
 
 applyArt();
 refreshTexts();

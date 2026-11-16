@@ -1,7 +1,6 @@
-// 排行榜：本机榜（localStorage）+ 全球榜（Supabase 表 scores，每人每个模式一行）
-// 玩家第一次上传成绩时自动匿名登录，RLS 保证每人只能写自己的那行
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm';
-import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
+// 排行榜：本机榜（localStorage）+ 全球榜（朋友的排行榜服务，只放生存模式）
+// 全球榜没有账号，按名字区分玩家：同一个名字只保留最高的一局，名字不分大小写
+import { LB_URL, LB_GAME, GLOBAL_MODES, GAME_VERSION } from './config.js';
 
 export const MODES = ['race', 'endless'];
 const LOCAL_MAX = 10;
@@ -20,10 +19,22 @@ function writeLocal(mode, rows) {
   try { localStorage.setItem('starrift.lb.' + mode, JSON.stringify(rows)); } catch { /* 存储不可用 */ }
 }
 
+// 匿名客户端 id：随机串存在本机，只用来帮对方排查问题，不展示
+function clientId() {
+  try {
+    let id = localStorage.getItem('starrift.client');
+    if (!id) {
+      id = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem('starrift.client', id);
+    }
+    return id;
+  } catch { return ''; }
+}
+
 // 数据来自其他玩家，读取时清洗
 function clean(r) {
   if (!r || typeof r.score !== 'number' || !Number.isFinite(r.score) || r.score <= 0) return null;
-  return { id: r.user_id, name: String(r.name || '').slice(0, 16) || '???', score: r.score };
+  return { name: String(r.name || '').slice(0, 16) || '???', score: r.score };
 }
 
 export class Leaderboard {
@@ -31,44 +42,25 @@ export class Leaderboard {
     this.onChange = onChange;
     this.local = { race: readLocal('race'), endless: readLocal('endless') };
     this.global = { race: [], endless: [] };
-    this.mine = { race: null, endless: null };
-    // local：未配置全球榜；loading；live；error：读取失败
-    this.status = 'local';
-    this.canWrite = false;
-    this.uid = null;
-    if (SUPABASE_URL && SUPABASE_KEY) {
-      try {
-        this.sb = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, storageKey: 'starrift.auth' } });
-        this.status = 'loading';
-        this.canWrite = true;
-        this.init();
-      } catch { this.status = 'error'; }
-    }
+    this.myName = '';
+    // 全球榜状态：loading / live / error（只对 GLOBAL_MODES 里的模式有意义）
+    this.status = LB_URL && LB_GAME ? 'loading' : 'off';
+    this.refresh();
   }
 
-  async init() {
-    try {
-      const { data } = await this.sb.auth.getSession();
-      this.uid = data.session ? data.session.user.id : null;
-    } catch { /* 没有登录过也没关系，上传时再登录 */ }
-    await this.refresh();
-  }
+  isGlobal(mode) { return this.status !== 'off' && GLOBAL_MODES.includes(mode); }
+  // 这一行是不是我自己（按名字，不分大小写）
+  isMe(r) { return !!this.myName && r.name.toLowerCase() === this.myName.toLowerCase(); }
 
-  get hasGlobal() { return this.status === 'live' || this.status === 'loading'; }
-
-  // 重新拉取两个模式的前 50 名
   async refresh() {
-    if (!this.sb) return;
+    if (this.status === 'off') { this.onChange(); return; }
     try {
-      const results = await Promise.all(MODES.map((mode) =>
-        this.sb.from('scores').select('user_id,name,score').eq('mode', mode)
-          .order('score', { ascending: mode === 'race' }).limit(GLOBAL_LIMIT)));
-      MODES.forEach((mode, i) => {
-        if (results[i].error) throw results[i].error;
-        this.global[mode] = results[i].data.map(clean).filter(Boolean);
-        const me = this.global[mode].find((r) => r.id === this.uid);
-        if (me) this.mine[mode] = me;
-      });
+      for (const mode of GLOBAL_MODES) {
+        const res = await fetch(`${LB_URL}/api/top?game=${encodeURIComponent(LB_GAME)}&limit=${GLOBAL_LIMIT}`);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        this.global[mode] = (Array.isArray(data.top) ? data.top : []).map(clean).filter(Boolean);
+      }
       this.status = 'live';
     } catch {
       if (this.status !== 'live') this.status = 'error';
@@ -76,72 +68,39 @@ export class Leaderboard {
     this.onChange();
   }
 
-  async ensureSession() {
-    if (this.uid) return this.uid;
-    const { data, error } = await this.sb.auth.signInAnonymously();
-    if (error) throw error;
-    this.uid = data.user.id;
-    return this.uid;
-  }
-
-  async fetchMine(mode) {
-    const { data, error } = await this.sb.from('scores').select('user_id,name,score')
-      .eq('mode', mode).eq('user_id', this.uid).maybeSingle();
-    if (error) throw error;
-    this.mine[mode] = data ? clean(data) : null;
-  }
-
   // 返回 { global: 'uploaded' | 'not_better' | 'local_only' | 'failed', globalRank, error }
-  async submit(mode, name, score) {
+  // extra：{ time } 本局时长（秒），只存不排序
+  async submit(mode, name, score, extra = {}) {
     const rows = this.local[mode].concat({ name, score, at: Date.now() });
     rows.sort((a, b) => (better(mode, a.score, b.score) ? -1 : better(mode, b.score, a.score) ? 1 : 0));
     this.local[mode] = rows.slice(0, LOCAL_MAX);
     writeLocal(mode, this.local[mode]);
     const out = { global: 'local_only' };
-    if (this.sb && this.canWrite) {
+    if (this.isGlobal(mode)) {
       try {
-        await this.ensureSession();
-        await this.fetchMine(mode);
-        const prev = this.mine[mode];
-        if (prev && !better(mode, score, prev.score)) {
-          out.global = 'not_better';
-        } else {
-          const { error } = await this.sb.from('scores').upsert(
-            { user_id: this.uid, mode, name, score, updated_at: new Date().toISOString() },
-            { onConflict: 'user_id,mode' });
-          if (error) throw error;
-          this.mine[mode] = { id: this.uid, name, score };
-          out.global = 'uploaded';
-        }
-        out.globalRank = await this.rankOf(mode);
+        const res = await fetch(`${LB_URL}/api/score`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            game: LB_GAME, name, score: Math.max(0, Math.min(5000000, Math.floor(score))),
+            time: Math.round((extra.time || 0) * 10) / 10, mode: 'Survival', version: GAME_VERSION, client: clientId(),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error === 'slow down' ? '提交太频繁，稍后再试' : data.error || 'HTTP ' + res.status);
+        out.global = data.best === false ? 'not_better' : 'uploaded';
+        out.globalRank = typeof data.rank === 'number' ? data.rank : null;
+        if (Array.isArray(data.top)) this.global[mode] = data.top.map(clean).filter(Boolean);
+        this.status = 'live';
       } catch (e) {
         out.global = 'failed';
         out.error = (e && e.message) || String(e);
       }
-      this.refresh();
     }
     this.onChange();
     return out;
   }
 
-  // 全球名次 = 成绩比我好的人数 + 1
-  async rankOf(mode) {
-    const me = this.mine[mode];
-    if (!me) return null;
-    let q = this.sb.from('scores').select('user_id', { count: 'exact', head: true }).eq('mode', mode);
-    q = mode === 'race' ? q.lt('score', me.score) : q.gt('score', me.score);
-    const { count, error } = await q;
-    if (error) throw error;
-    return count + 1;
-  }
-
-  // 改昵称后同步到自己的全球记录
-  async rename(name) {
-    if (!this.sb || !this.uid) return;
-    try {
-      await this.sb.from('scores').update({ name }).eq('user_id', this.uid);
-      for (const mode of MODES) if (this.mine[mode]) this.mine[mode] = { ...this.mine[mode], name };
-      this.refresh();
-    } catch { /* 改名失败不影响游戏 */ }
-  }
+  // 全球榜没有改名接口：改名以后用新名字重新上榜，旧名字的成绩留在榜上
+  rename() {}
 }
