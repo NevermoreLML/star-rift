@@ -34,6 +34,11 @@ export class SynthAudio {
     this.brakeGain = this.gain(0, this.sfx);
     this.loopNoise(this.filter('bandpass', 3200, 2.5, this.brakeGain));
 
+    // 路面隆隆声：轮胎压在石头上的低频噪声，贴地时才有，车越快越响、越“粗”
+    this.rumbleGain = this.gain(0, this.sfx);
+    this.rumbleFilter = this.filter('lowpass', 120, 0.9, this.rumbleGain);
+    this.loopNoise(this.rumbleFilter);
+
     // 音乐延迟
     this.delay = ctx.createDelay(1);
     this.delay.delayTime.value = (60 / 124) * 0.75;
@@ -62,6 +67,9 @@ export class SynthAudio {
   setEngine(norm, grounded, braking, active) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
+    const on = active && grounded && norm > 0.05;
+    this.rumbleGain.gain.setTargetAtTime(on ? 0.22 + 0.3 * Math.min(norm, 1.3) : 0, t, on ? 0.06 : 0.03);
+    this.rumbleFilter.frequency.setTargetAtTime(90 + 120 * Math.min(norm, 1.3), t, 0.1);
     this.brakeGain.gain.setTargetAtTime(active && braking && norm > 0.05 ? (grounded ? 0.12 : 0.05) : 0, t, 0.04);
   }
 

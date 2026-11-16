@@ -64,6 +64,8 @@ html, body {
 .hud-bottom { position: absolute; bottom: calc(28px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); text-align: center; }
 .speed-row { display: flex; align-items: baseline; justify-content: center; gap: 8px; }
 .speed { font-size: 52px; font-weight: 900; }
+.vmax { font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 700; color: #7dffb0; min-width: 64px; }
+.vmax.down { color: #ff8a7a; }
 .unit { font-family: 'Orbitron'; font-size: 13px; color: var(--dim); }
 .speedbar { width: 280px; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.1); overflow: hidden; margin-top: 4px; }
 #hud-speed-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--blue), var(--cyan)); box-shadow: 0 0 12px var(--cyan); transition: width 0.08s linear; }

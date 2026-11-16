@@ -39,12 +39,25 @@ export const wrapLane = (a) => (TRACK_STYLE.outside ? clamp(a, 0.02, LANES - 0.0
 export const laneIndex = (a) => Math.floor(wrapLane(a)) % LANES;
 // 赛道外观：默认是霓虹发光平台；主题可以改成陨石平台（rocky：底下的厚度，edges：端头发光条，spikes：障碍做成冰刺）
 // continuous：连贯管道模式——平时各节首尾相接没有整圈断口，难点来自扣掉的部分（远处扣、整条道缺、道中间的洞、不规则大缺口）
-export const TRACK_STYLE = { rocky: 0, slab: 0, edges: true, spikes: false, lines: false, outside: false, radius: R, laneWidth: 0, continuous: false };
+export const TRACK_STYLE = { rocky: 0, slab: 0, edges: true, spikes: false, lines: false, outside: false, radius: R, laneWidth: 0, continuous: false, canyon: false, splits: false };
 // 当前赛道面的半径：管道内壁模式是 R；外表面模式（outside）是巨石的半径 TRACK_STYLE.radius
 export const trackRadius = () => (TRACK_STYLE.outside ? TRACK_STYLE.radius : R);
 // 每条赛道占的角度：管道模式 10 条道绕一整圈；陨石外表面模式只占巨石顶上的一段弧，每条道宽 laneWidth 米
 export const laneAng = () => (TRACK_STYLE.outside ? TRACK_STYLE.laneWidth / TRACK_STYLE.radius : LANE_ANG);
 let SPIKE_GEO = null; // 冰刺共用一个几何体
+let ROCK_GEO = null;  // 障碍岩石块共用一个几何体（不规则的圆滑石头）
+function rockLump() {
+  const g = new THREE.IcosahedronGeometry(1, 3);
+  const p = g.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const k = 1 + 0.22 * Math.sin(v.x * 3.3 + v.y * 2.1) * Math.cos(v.z * 2.7 - v.x * 1.3) + 0.1 * Math.sin(v.y * 6.1 + v.z * 4.3);
+    v.multiplyScalar(k);
+    p.setXYZ(i, v.x, v.y * 0.85 + 0.85, v.z);    // 底部大致在 y = 0，高约 1.7（之后按高度缩放）
+  }
+  g.computeVertexNormals();
+  return g;
+}
 
 // 平滑的二维值噪声，返回 0..1
 function vnoise(x, y) {
@@ -54,8 +67,59 @@ function vnoise(x, y) {
   return lerp(lerp(h(i, j), h(i + 1, j), fu), lerp(h(i, j + 1), h(i + 1, j + 1), fu), gu);
 }
 
+// 石带模式：第 i 条道左（k=0）、右（k=1）边缘往里收多少（赛道宽度单位）。按绝对位置算，前后两段的边缘能接上
+const laneInset = (i, s, k) => {
+  const j = ((i % LANES) + LANES) % LANES;
+  return 0.02 + 0.045 * vnoise(s * 0.07 + j * 13.1 + k * 5.7, j * 3.3 + k);
+};
+
+// 开场峡谷（TRACK_STYLE.canyon）：第一节是一块巨大陨石上的 U 形山谷。
+//   谷底是管道下半圈（第 3～7 条道）连成的一整块岩石，从 start 一直铺到 canyonFloorEnd(a) 参差地断开，露出下面一条条石带；
+//   两侧岩壁在 wall0～wall1 之间逐渐变矮、裂开；管道上半圈的道从 canyonLaneStart 开始一条条长出来
+export const CANYON = { start: -700, wall0: 150, wall1: 250 };
+
+// 分岔（TRACK_STYLE.splits）：每隔 2～2.5 公里管道劈成左右两半，各自分开 sep 米、一高一低差 2×drop 米，
+// 分开 ramp 米、合拢 ramp 米，整段 len 米。一半是稳路（全是普通道），一半是险路（加速道多但有洞）
+const SPLIT = { sep: 24, drop: 9, ramp: 140, len: [380, 520], first: [1600, 2000], every: [2000, 2500] };
+const canyonFloorEnd = (a) => 222 + 20 * vnoise(a * 1.1, 4.2) + 7 * vnoise(a * 3.7, 1.7);
+const CANYON_GROW = { 2: 228, 8: 232, 1: 252, 9: 256, 0: 278 };
+const canyonLaneStart = (i) => CANYON_GROW[i] + 8 * vnoise(i * 3.3, 0.7);
+
+// 测试赛道：网址加 &test=boost，所有道都是加速道，没有洞、没有障碍、没有分岔和大断口（用来测变身）。
+// 只在本机（localhost / 127.0.0.1）打开时有效，线上版本加了参数也没用
+export const TEST_BOOST = typeof location !== 'undefined'
+  && ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)
+  && new URLSearchParams(location.search).get('test') === 'boost';
+
+// 第 i 条道的贴图变化：随机错开、左右翻转、转 90°（按道的编号固定，前后两节接得上）
+const laneUV = (i) => {
+  const j = ((i % LANES) + LANES) % LANES;
+  const ox = vnoise(j * 5.3, 1.7) * 3, oy = vnoise(j * 2.9, 8.1) * 3;
+  const flip = vnoise(j * 7.7, 3.3) < 0.5, rot = vnoise(j * 4.1, 6.6) < 0.5;
+  return (u, v) => { const uu = flip ? 1 - u : u; return rot ? [v + oy, uu + ox] : [uu + ox, v + oy]; };
+};
+
+// 把存在的道分成一组组挨在一起的“簇”（管道是一圈，首尾相接），每簇按从左到右的顺序列出道的编号
+function laneClusters(present) {
+  if (present.every(Boolean)) return [[...Array(LANES).keys()]];
+  let start = present.findIndex((ok, i) => ok && !present[(i + LANES - 1) % LANES]);
+  if (start < 0) return [];
+  const out = [];
+  let cur = null;
+  for (let k = 0; k < LANES; k++) {
+    const i = (start + k) % LANES;
+    if (!present[i]) { cur = null; continue; }
+    if (!cur) out.push((cur = []));
+    cur.push(i);
+  }
+  return out;
+}
+const isGoodType = (t) => t === TYPE.NORMAL || t === TYPE.BOOST;
+
 // 两条赛道在圆周上相隔几条
 const laneDist = (a, b) => Math.min((a - b + LANES) % LANES, (b - a + LANES) % LANES);
+// 从 a 绕到 b 最近的方向和步数（-5..4）
+const shortestDelta = (a, b) => ((b - a + LANES * 1.5) % LANES) - LANES / 2;
 
 // ---------------------------------------------------------------------------
 // Path：在太空中弯曲的管道中心线 + 平行移动标架 + 扭转角
@@ -68,6 +132,7 @@ export class Path {
     this.diff = difficultyFn;
     this.curveAmp = curveAmpFn;
     this.calm = []; // 拉直区间 [起点, 终点]：大空隙前后不弯，保证关键跳跃看得见
+    this.splits = []; // 分岔 { s0, s1, risky 哪一半是险路(-1 左 / 1 右), drop 哪一半往上抬 }
     this.YAW = [0];
     this.PITCH = [0];
     const t0 = this.dir(0, 0);
@@ -167,7 +232,34 @@ export class Path {
     }
     const th = (a - 5.5) * LANE_ANG + f.tw;
     this.r.copy(f.n).multiplyScalar(Math.cos(th)).addScaledVector(f.b, Math.sin(th));
-    return out.copy(f.p).addScaledVector(this.r, R - h);
+    out.copy(f.p).addScaledVector(this.r, R - h);
+    // 分岔：管道沿前进方向劈成左右两半（第 0～4 条道 / 第 5～9 条道），两半往两边分开、一高一低，之后再合拢
+    if (this.splits.length) {
+      const sp = this.splitAt(s);
+      if (sp) {
+        const w = this.splitW(sp, s);
+        const sg = ((a % LANES) + LANES) % LANES < 5 ? -1 : 1;
+        const c = Math.cos(f.tw), si = Math.sin(f.tw);
+        // 截面里的“侧”（垂直于劈开的那道缝）和“上”，随管道扭转一起转
+        const sideX = sg * w * SPLIT.sep, upY = sg * sp.drop * w * SPLIT.drop;
+        out.x += (f.n.x * -si + f.b.x * c) * sideX - (f.n.x * c + f.b.x * si) * upY;
+        out.y += (f.n.y * -si + f.b.y * c) * sideX - (f.n.y * c + f.b.y * si) * upY;
+        out.z += (f.n.z * -si + f.b.z * c) * sideX - (f.n.z * c + f.b.z * si) * upY;
+      }
+    }
+    return out;
+  }
+
+  // s 处所在的分岔（只算劈开到合拢之间），没有返回 null
+  splitAt(s) {
+    for (const sp of this.splits) if (s > sp.s0 && s < sp.s1) return sp;
+    return null;
+  }
+
+  // 分开的程度 0～1：两头各 SPLIT.ramp 米平滑地分开、合拢
+  splitW(sp, s) {
+    const e = Math.min(clamp((s - sp.s0) / SPLIT.ramp, 0, 1), clamp((sp.s1 - s) / SPLIT.ramp, 0, 1));
+    return e * e * (3 - 2 * e);
   }
 
   // 外表面模式：已知某点在 s 处的法平面内，反算它的赛道坐标 (a, h)
@@ -319,6 +411,216 @@ class GeoBuilder {
       }
       return [u * 8, v * 5];
     });
+  }
+
+  // 石带：一条道的石头，横截面是一整团圆鼓鼓的岩石（沿着横截面绕一圈做成一整张网格）：
+  //   上面是能开车的路面（微微起伏，两边圆滑地倒下去），左右圆鼓，
+  //   底部像熔化后往下流淌的石头：几个圆钝的鼓包、长短不一的垂坠，偶尔一根细长的尖，都和石头长成一体。
+  // 断开的一头（capStart / capEnd）圆滑地收拢成一个钝头；没断开的一头和前后两段无缝接在一起。
+  stoneLane(path, i, s0, s1, depth, topSlot, sideSlot, capStart, capEnd) {
+    const W = trackRadius() * laneAng();          // 一条道多宽（米）
+    const EL = (s) => i + laneInset(i, s, 0), ER = (s) => i + 1 - laneInset(i, s, 1);
+    const relief = (s, xn) => 0.07 * (vnoise(s * 0.8 + i * 3, xn * 3 + 3) - 0.5) + 0.04 * (vnoise(s * 2.1, xn * 6.5 + i) - 0.5);
+    const body = (s, xn) => depth * (0.75 + 0.45 * vnoise(s * 0.12 + i * 7.7, xn * 1.6 + 2));   // 石头本体的厚度
+    // 往下流淌的部分：圆钝的鼓包 + 偶尔一根细长的尖
+    const drip = (s, xn) => {
+      const lobe = Math.max(0, vnoise(s * 0.42 + i * 17.3, xn * 2.4 + i) - 0.5) / 0.5;
+      const spike = Math.max(0, vnoise(s * 0.5 + i * 5.1, xn * 4.5 + 9) - 0.8) / 0.2;
+      return (Math.pow(lobe, 1.3) * (1 + 1.6 * vnoise(s * 0.09, i + 0.5)) + Math.pow(spike, 2.2) * 4.5) * (1 - Math.pow(Math.abs(xn), 4));
+    };
+    // 断开的一头：在最后 r 米里截面圆滑地缩成一个钝头（r 每条道、每个端头都不一样）
+    const rS = 1.6 + 1.4 * vnoise(s0 * 0.11, i + 0.3), rE = 1.6 + 1.4 * vnoise(s1 * 0.11, i + 0.7);
+    const sA = capStart ? s0 - 0.3 : s0, sB = capEnd ? s1 + 0.3 : s1;
+    const shrink = (s) => {
+      let k = 1;
+      if (capStart && s < sA + rS) k = Math.min(k, Math.sqrt(Math.max(0, 1 - Math.pow((sA + rS - s) / rS, 2))));
+      if (capEnd && s > sB - rE) k = Math.min(k, Math.sqrt(Math.max(0, 1 - Math.pow((s - (sB - rE)) / rE, 2))));
+      return k;
+    };
+    const ns = Math.max(3, Math.ceil((sB - sA) / 1.2));
+    const S = (v) => sA + v * (sB - sA);
+    // 横截面像压扁的胶囊：顶面平，左右两头是完整的半圆（半径 rr），底面浅浅地鼓一下、带往下流淌的垂坠
+    const rr = depth / 2;
+    const geo = (s) => {
+      const cx = (EL(s) + ER(s)) / 2, hw = (ER(s) - EL(s)) / 2;
+      const ra = Math.min(rr / W, hw * 0.45);        // 半圆半径（赛道坐标）
+      return { cx, hw, ra, cw: hw - ra, r: ra * W };
+    };
+    const put = (s, a, h, out) => {                  // 端头收拢：截面朝中心缩小
+      const k = shrink(s), g = geo(s), yc = -g.r;
+      path.point(s, g.cx + (a - g.cx) * k, yc + (h - yc) * k, out);
+    };
+    // 路面贴图铺满平顶和左右两个半圆（贴图坐标按沿表面走过的距离算，绕过半圆也不拉伸），
+    // 只有底面（和往下垂的部分）用石头侧面的贴图
+    const U = (arcM, g) => 0.5 + arcM / (2 * g.hw * W);
+    const uv = laneUV(i);
+    // 平顶：起伏在两头淡出，和半圆无缝接上
+    this.grid(10, ns, topSlot, (u, v, out) => {
+      const s = S(v), g = geo(s), a = g.cx - g.cw + 2 * g.cw * u, xn = (a - g.cx) / g.hw;
+      const fade = Math.min(1, u / 0.12, (1 - u) / 0.12);
+      put(s, a, relief(s, xn) * fade, out);
+      return uv(U((a - g.cx) * W, g), s / 6); // 一块贴图 ≈ 一条道宽 × 6 米，纹理不被拉长
+    });
+    // 右半圆、左半圆（从顶上绕到底下）
+    for (const side of [1, -1]) {
+      this.grid(8, ns, topSlot, (u, v, out) => {
+        const s = S(v), g = geo(s), ph = Math.PI / 2 - u * Math.PI;
+        put(s, g.cx + side * (g.cw + g.ra * Math.cos(ph)), -g.r + g.r * Math.sin(ph), out);
+        return uv(U(side * (g.cw * W + u * Math.PI * g.r), g), s / 6);
+      });
+    }
+    // 底面：浅浅地鼓一下，带往下流淌的垂坠
+    this.grid(14, ns, sideSlot, (u, v, out) => {
+      const s = S(v), g = geo(s), a = g.cx + g.cw - 2 * g.cw * u, xn = (a - g.cx) / g.hw;
+      const h = -2 * g.r - (Math.max(0, body(s, xn) - depth) + drip(s, xn)) * Math.pow(Math.sin(Math.PI * u), 0.6);
+      put(s, a, h, out);
+      return [u * 4, s / 8];
+    });
+    // 两头收拢到的那一点已经是同一个位置，网格自然封口
+    void W;
+  }
+
+  // 碎裂道：路面碎成很多块不规则的石片，石片之间有真的空隙（能看到下面的太空）。
+  // 网格点随机挪动（相邻石片共用，拼起来严丝合缝），每块再往自己中心收一点留出缝。
+  // 每块石片是一整团圆滑的石头：顶面中间平、靠边圆滑地倒下去，底下鼓起、往下垂（和其他石带同样的感觉），没有平直的切面
+  shardLane(path, i, s0, s1, topSlot, sideSlot) {
+    const A0 = i + laneInset(i, s0, 0) + 0.03, A1 = i + 1 - laneInset(i, s0, 1) - 0.03;
+    const W = trackRadius() * laneAng();           // 一条道多宽（米）
+    const cols = 3, rows = Math.max(2, Math.round((s1 - s0) / 2.4));
+    const ds = (s1 - s0) / rows;
+    const G = [];
+    for (let r = 0; r <= rows; r++) {
+      G.push([]);
+      for (let c = 0; c <= cols; c++) {
+        const ja = c === 0 || c === cols ? 0 : (vnoise(r * 1.7 + i * 3.1, c * 2.3 + s0) - 0.5) * 0.55 / cols;
+        const js = r === 0 || r === rows ? 0 : (vnoise(c * 1.3 + i, r * 2.9 + s0 * 0.1) - 0.5) * ds * 0.7;
+        G[r].push([A0 + (c / cols) * (A1 - A0) + ja, s0 + r * ds + js]);
+      }
+    }
+    const R = 0.32;                                  // 边缘圆角往下倒的深度（米）
+    const uvS = laneUV(i);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        let q = [G[r][c], G[r][c + 1], G[r + 1][c + 1], G[r + 1][c]];
+        const ca = (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4, cs = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4;
+        const gap = 0.05 + 0.1 * vnoise(r * 3.7 + i, c * 5.1 + s0);
+        q = q.map(([a, s]) => {
+          const dx = (ca - a) * W, dy = cs - s, d = Math.hypot(dx, dy) || 1;
+          return [a + (dx / d) * gap / W, s + (dy / d) * gap];
+        });
+        const seed = r * 1.37 + c * 4.1 + i * 7.3 + s0 * 0.01;
+        const tilt = (vnoise(seed, 1.1) - 0.5) * 0.07;
+        const depth = 0.45 + 0.4 * vnoise(seed, 2.7);
+        // 四边形内的双线性插值
+        const P = (u, v) => [q[0][0] + (q[1][0] - q[0][0]) * u + (q[3][0] - q[0][0]) * v + (q[0][0] - q[1][0] + q[2][0] - q[3][0]) * u * v,
+          q[0][1] + (q[1][1] - q[0][1]) * u + (q[3][1] - q[0][1]) * v + (q[0][1] - q[1][1] + q[2][1] - q[3][1]) * u * v];
+        // 到最近一条边的距离（0 = 边上，0.5 = 中心）
+        const edge = (u, v) => Math.min(u, 1 - u, v, 1 - v);
+        const relief = (a, s) => 0.04 * (vnoise(s * 0.9 + i * 3, a * 7) - 0.5);
+        // 顶面：靠边 30% 的范围圆滑地倒下去，边上比中间低 R
+        const NT = 5;
+        this.grid(NT, NT, topSlot, (u, v, o) => {
+          const [a, s] = P(u, v), e = edge(u, v);
+          const k = Math.max(0, 1 - e / 0.3);
+          const h = tilt + relief(a, s) * (1 - k) - R * (1 - Math.sqrt(Math.max(0, 1 - k * k)));
+          path.point(s, a, h, o);
+          return uvS((a - A0) / (A1 - A0), s / 6);
+        });
+        // 底面：从边上同一圈开始往下鼓，中间垂得最深，带一点不规则的垂坠
+        const NB = 3;
+        this.grid(NB, NB, sideSlot, (u, v, o) => {
+          const uu = 1 - u, [a, s] = P(uu, v), e = edge(uu, v);
+          const sag = Math.pow(Math.min(1, e / 0.5), 0.6) * depth * (0.75 + 0.5 * vnoise(a * 9 + seed, s * 0.7));
+          path.point(s, a, tilt - R - sag, o);
+          return [uu, v];
+        });
+      }
+    }
+  }
+
+  // 石桥：从 a0 到 a1（两条道的边缘之间）的一座短桥，以 sc 为中心沿管道宽 w 米。
+  // 两头宽、中间细，桥面比赛道略低并往下凹，底下往下垂，像两根钟乳石长到了一起
+  stoneBridge(path, a0, a1, sc, w, depth, sag, slot, seed, topSlot = slot) {
+    const nu = 8, nv = 3;
+    const e = (u) => Math.abs(2 * u - 1);                       // 0 = 桥中间，1 = 两头
+    const half = (u) => (w / 2) * (0.4 + 0.6 * Math.pow(e(u), 1.6));
+    const A = (u) => a0 + u * (a1 - a0);
+    const top = (u) => -0.03 - sag * Math.pow(1 - e(u), 1.3);
+    const bot = (u, t) => top(u) - depth * (0.5 + 0.4 * vnoise(u * 4 + seed, t * 3)) - sag * 1.6 * Math.pow(1 - e(u), 2);
+    this.grid(nu, nv, topSlot, (u, v, out) => { path.point(sc + (2 * v - 1) * half(u), A(u), top(u), out); return [u * 0.3, (sc + (2 * v - 1) * half(u)) / 16]; });
+    this.grid(nu, nv, slot, (u, v, out) => { path.point(sc + (2 * v - 1) * half(u) * 0.8, A(u), bot(u, v), out); return [u * 2, v]; });
+    for (const side of [-1, 1]) {
+      this.grid(nu, 2, slot, (u, v, out) => {
+        const h = top(u) + (bot(u, side > 0 ? 1 : 0) - top(u)) * v;
+        path.point(sc + side * half(u) * (1 - 0.2 * v), A(u), h, out);
+        return [u * 2, v];
+      });
+    }
+  }
+
+  // 钟乳石：从 (s, a, h0) 往管道外侧垂下去的一根尖锥，长 len 米，根部半径 r 米
+  stalactite(path, s, a, h0, len, r, slot) {
+    const W = trackRadius() * laneAng();
+    this.grid(7, 3, slot, (u, v, out) => {
+      const ang = u * Math.PI * 2, rr = r * Math.pow(1 - v, 1.4);
+      path.point(s + Math.cos(ang) * rr, a + Math.sin(ang) * rr / W, h0 - v * len, out);
+      return [u, v];
+    });
+  }
+
+  // 开场峡谷的谷底和两侧岩壁（见 CANYON）
+  canyon(path, topSlot, sideSlot) {
+    const A0 = 2.75, A1 = 8.25, S0 = CANYON.start, NEAR = -160;
+    // 谷底：远处（起点之前）稀一点，近处 0.8 米一排，表面和石带一样有几厘米的起伏；断口处圆滑地往下收
+    const relief = (s, a) => 0.06 + 0.07 * (vnoise(s * 0.8, a * 3) - 0.5) + 0.04 * (vnoise(s * 2.1, a * 6.5) - 0.5);
+    const floor = (sFn, ns) => this.grid(44, ns, topSlot, (u, v, out) => {
+      const a = A0 + u * (A1 - A0), e = canyonFloorEnd(a), s = sFn(v, e);
+      const tail = Math.max(0, (s - (e - 3)) / 3);
+      path.point(s, a, relief(s, a) - 2.4 * tail * tail, out);
+      return [a, s / 6];
+    });
+    floor((v) => S0 + v * (NEAR - S0), 40);
+    floor((v, e) => NEAR + v * (e - NEAR), Math.ceil((250 - NEAR) / 0.8));
+
+    // 岩壁：从谷底边缘往上，越高越往外翻（U 形），顶上再往外铺成一片起伏的谷顶
+    const up = new THREE.Vector3(), sd = new THREE.Vector3();
+    const W0 = CANYON.wall0, W1 = CANYON.wall1;
+    for (const sg of [-1, 1]) {
+      const fall = (s) => clamp((s - W0) / (W1 - W0), 0, 1);
+      const H = (s) => {
+        const t = fall(s);
+        const base = 34 + 24 * vnoise(s * 0.011, sg * 3.1 + 1) + 9 * vnoise(s * 0.05, sg * 5);
+        const crack = 1 - 0.65 * t * vnoise(s * 0.16, sg * 7.7); // 变矮的同时一道道裂开、参差不齐
+        return Math.max(0.4, base * Math.pow(1 - t, 1.4) * crack);
+      };
+      const faceX = (s, y, h) => {
+        const rough = clamp(y / 3, 0, 1); // 贴着谷底的地方和谷底平滑接上
+        return R - 0.4 + 0.22 * y + 16 * Math.pow(y / Math.max(h, 1), 2)
+          + rough * (6 * (vnoise(s * 0.03, y * 0.05 + sg * 7) - 0.5) + 2.2 * (vnoise(s * 0.12, y * 0.18 + sg) - 0.5) + 0.6 * (vnoise(s * 0.5, y * 0.6 + sg * 3) - 0.5));
+      };
+      const wall = (sFn, ns) => this.grid(ns, 36, sideSlot, (u, v, out) => {
+        const s = sFn(u), h = H(s), t = fall(s);
+        let X, Y;
+        if (v <= 0.75) {
+          Y = -1.6 + (h + 1.6) * (v / 0.75);
+          X = faceX(s, Math.max(0, Y), h);
+        } else {
+          const q = (v - 0.75) / 0.25;
+          const X0 = faceX(s, h, h);
+          X = X0 + q * (45 + 35 * vnoise(s * 0.02, sg * 2.3)) * (1 - t);
+          Y = h + (3 + 7 * vnoise(s * 0.03 + q * 2.5, sg * 2 + q)) * Math.sin(q * Math.PI * 0.6) * clamp(h / 20, 0, 1);
+        }
+        const f = path.frame(s);
+        // 截面里的“上”和“侧”（随管道扭转一起转）
+        const c = Math.cos(f.tw), si = Math.sin(f.tw);
+        up.copy(f.n).multiplyScalar(-c).addScaledVector(f.b, -si);
+        sd.copy(f.n).multiplyScalar(-si * sg).addScaledVector(f.b, c * sg);
+        out.copy(f.p).addScaledVector(sd, X).addScaledVector(up, Y);
+        return [s / 8, v * 6];
+      });
+      wall((u) => S0 + u * (NEAR - S0), 40);
+      wall((u) => NEAR + u * (W1 - NEAR), Math.ceil((W1 - NEAR) / 1.2));
+    }
   }
 
   curvedBox(path, a0, a1, s0, s1, h0, h1, topSlot, sideSlot, vScale = 16) {
@@ -497,6 +799,7 @@ export class Track {
     this.mode = mode;
     this.scene = scene;
     this.mats = mats;
+    this.seed = seed;
     this.rand = mulberry32(seed);
     this.raceLength = mode === 'race' ? 7200 : Infinity;
     this.path = new Path(seed, (s) => this.difficulty(s), (s) => this.curveAmp(s));
@@ -507,6 +810,7 @@ export class Track {
     this.crumbling = [];
     this.group = new THREE.Group();
     scene.add(this.group);
+    this.jobs = []; // 等着建几何的节（见 runJobs）
     this.update(0, 0, 0);
   }
 
@@ -630,18 +934,19 @@ export class Track {
       // 4.2km 起：偶尔一个 44–48 米的空隙，普通跳要卡准时机，踩加速就很轻松
       if (x > 4200) bigGap = { chance: 0.45, min: 44, max: 48 };
     } else if (st.name === 'cliff') {
-      gap = lerp(25, 31, t); len = lerp(82, 56, t); count = Math.round(lerp(7, 3, t));
+      gap = lerp(25, 31, t); len = lerp(82, 56, t); count = Math.round(lerp(7, 4, t)); // 至少留 4 条（原来最后只剩 3 条，加上开洞常常只剩 1～2 条）
       weights = [[N.NORMAL, 1], [N.BOOST, 0.25], [N.SLOW, 0.14], [N.BOUNCE, 0.12],
         [N.SHORT, 0.24], [N.OBSTACLE, 0.28], [N.CRUMBLE, 0.24]];
       // 前段先练 46–52 米；5.8km 起逐步变成 60–66 米，必须踩加速或连跳
+      // 跨度比原来短 4～6 米：仍然要踩加速或连跳，但不那么卡极限
       bigGap = x < 5800
-        ? { chance: 0.3, min: 46, max: 52 }
-        : { chance: lerp(0.3, 0.45, t), min: lerp(56, 60, t), max: lerp(60, 66, t) };
+        ? { chance: 0.3, min: 44, max: 49 }
+        : { chance: lerp(0.3, 0.4, t), min: lerp(52, 55, t), max: lerp(56, 60, t) };
     } else {
-      gap = lerp(31, 36, t); len = lerp(56, 48, t); count = Math.round(lerp(3, 2, t));
+      gap = lerp(31, 36, t); len = lerp(56, 48, t); count = Math.round(lerp(4, 3, t));
       weights = [[N.NORMAL, 1], [N.BOOST, 0.28], [N.SLOW, 0.14], [N.BOUNCE, 0.12],
         [N.SHORT, 0.26], [N.OBSTACLE, 0.3], [N.CRUMBLE, 0.26]];
-      bigGap = { chance: 0.45, min: 60, max: 68 };
+      bigGap = { chance: 0.4, min: 55, max: 62 };
     }
     return { st, gap, len, count, weights, bigGap };
   }
@@ -694,35 +999,124 @@ export class Track {
   // 连贯模式：在这一节里扣洞
   //   道中间的洞：一条道中间缺 10～24 米，旁边至少有一条道在这段是完整的（可以换道绕开，也可以跳过去）
   //   不规则大缺口：横跨 2～4 条相邻的道、斜着错开，每条缺 16～26 米（普通跳就能过）
+  // 打断过长的“直路”：任何一条普通/加速道（跨节连起来算）连续能开的长度不超过 LIMIT 米，
+  // 超过了就在那里开一个 10～16 米的洞（旁边要有别的完整的普通/加速道），玩家必须换道或起跳。
+  // LIMIT 按阶段：热身约 4 秒，越往后越短（约 2.3 秒）
+  breakLongRuns(lanes, s0, s1, P, split, canyon) {
+    const r = this.rand;
+    const LIMIT = { warm: 250, teach: 210, combo: 180, cliff: 150, beyond: 140 }[P.st.name] || 180;
+    if (!this.runStart) this.runStart = new Array(LANES).fill(null);
+    const good = (L) => L && (L.type === TYPE.NORMAL || L.type === TYPE.BOOST);
+    const holeAt = (L, a, b) => L.holes && L.holes.some(([h0, h1]) => h0 < b && h1 > a);
+    const solid = (j, a, b) => { const L = lanes[j]; return L && L.type !== TYPE.CRUMBLE && L.s0 <= a && L.s1 >= b && !holeAt(L, a, b); };
+    for (let i = 0; i < LANES; i++) {
+      const L = lanes[i];
+      if (!good(L)) { this.runStart[i] = null; continue; }
+      if (canyon) { this.runStart[i] = s1; continue; }        // 峡谷是开场热身，从峡谷尽头开始算
+      const grp = split ? (i < 5 ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9]) : (laneClusters(lanes.map(Boolean)).find((cl) => cl.includes(i)) || []);
+      const hs = (L.holes || []).slice().sort((x, y) => x[0] - y[0]);
+      const pieces = [];
+      { let a = L.s0; for (const [h0, h1] of hs) { if (h0 > a) pieces.push([a, h0]); a = Math.max(a, h1); } if (L.s1 > a) pieces.push([a, L.s1]); }
+      let lastSt = null, lastEnd = -1;
+      for (const [p0, p1] of pieces) {
+        let st = p0 === s0 && L.s0 === s0 && this.runStart[i] !== null ? this.runStart[i] : p0;
+        while (p1 - st > LIMIT) {
+          // 从该打断的位置开始往后找，每次挪 12 米，直到旁边有别的完整普通/加速道可走
+          let placed = false;
+          for (let a = Math.max(p0 + 8, st + LIMIT * (0.8 + 0.2 * r())); ; a += 12) {
+            const b = a + lerp(10, 16, r());
+            if (b > p1 - 8) break;
+            if (grp.some((j) => j !== i && good(lanes[j]) && solid(j, a - 6, b + 6))) {
+              (L.holes || (L.holes = [])).push([a, b]);
+              L.obstacles = L.obstacles.filter((os) => os < a - 6 || os > b + 6);
+              st = b;
+              placed = true;
+              break;
+            }
+          }
+          if (!placed) break; // 这一节放不下，计数不清零，下一节一开头接着找
+        }
+        lastSt = st; lastEnd = p1;
+      }
+      this.runStart[i] = lastEnd === s1 ? lastSt : null;
+    }
+  }
+
+  // 分岔里险路那一半开洞：每条道 0～2 个 10～22 米的洞，只开在两半完全分开的那段里，
+  // 并且同一处这一半至少还留 2 条完整的道
+  carveSplitHoles(lanes, s0, s1, sp) {
+    const r = this.rand;
+    const half = sp.risky < 0 ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+    const safe = sp.risky < 0 ? [5, 6, 7, 8, 9] : [0, 1, 2, 3, 4];
+    const lo = Math.max(s0 + 10, sp.s0 + SPLIT.ramp * 0.6), hi = Math.min(s1 - 10, sp.s1 - SPLIT.ramp * 0.6);
+    if (hi - lo < 30) return;
+    const holeAt = (L, a, b) => L.holes && L.holes.some(([h0, h1]) => h0 < b && h1 > a);
+    for (const i of half) {
+      const L = lanes[i];
+      if (!L) continue;
+      const n = r() < 0.75 ? 1 + (r() < 0.4 ? 1 : 0) : 0;
+      for (let k = 0; k < n; k++) {
+        const hl = lerp(10, 22, r());
+        const a = lo + r() * (hi - lo - hl), b = a + hl;
+        if (holeAt(L, a - 12, b + 12)) continue;
+        const solidN = half.filter((j) => j !== i && lanes[j] && !holeAt(lanes[j], a - 6, b + 6)).length;
+        if (solidN < 2) continue;
+        (L.holes || (L.holes = [])).push([a, b]);
+      }
+    }
+    if (r() < 0.6) {
+      const i = safe[Math.floor(r() * 5)], L = lanes[i];
+      const hl = lerp(8, 14, r());
+      const a = lo + r() * (hi - lo - hl), b = a + hl;
+      if (L && safe.filter((j) => j !== i && lanes[j] && !holeAt(lanes[j], a - 6, b + 6)).length >= 3) (L.holes || (L.holes = [])).push([a, b]);
+    }
+  }
+
   carveHoles(lanes, s0, s1, P) {
     const r = this.rand;
     const name = P.st.name, t = P.st.t;
     const len = s1 - s0;
-    const okType = (L) => L && (L.type === TYPE.NORMAL || L.type === TYPE.BOOST || L.type === TYPE.SLOW) && L.s0 === s0 && L.s1 === s1;
+    // 洞只开在普通道、加速道上（以前减速道开洞后会被改成普通道，结果并排出现两条一样的道）
+    const okType = (L) => L && (L.type === TYPE.NORMAL || L.type === TYPE.BOOST) && L.s0 === s0 && L.s1 === s1;
     const holeAt = (L, a, b) => L && L.holes && L.holes.some(([h0, h1]) => h0 < b && h1 > a);
     const solid = (i, a, b) => { const L = lanes[(i + LANES) % LANES]; return L && L.s0 <= a && L.s1 >= b && !holeAt(L, a, b) && L.type !== TYPE.CRUMBLE; };
+    // 除了第 skip 条（可以是一组），[a, b] 这一段还有没有完整的普通/加速道
+    const clusterOf = new Array(LANES).fill(-1);
+    laneClusters(lanes.map(Boolean)).forEach((cl, n) => cl.forEach((i) => { clusterOf[i] = n; }));
+    const goodSolid = (skip, a, b) => {
+      const sk = Array.isArray(skip) ? skip : [skip];
+      const cid = clusterOf[(sk[0] + LANES) % LANES];
+      return lanes.some((L, j) => L && !sk.includes(j) && clusterOf[j] === cid && isGoodType(L.type) && solid(j, a, b));
+    };
     const addHole = (L, a, b) => {
       (L.holes || (L.holes = [])).push([a, b]);
       L.obstacles = L.obstacles.filter((os) => os < a - 6 || os > b + 6);
-      if (L.type === TYPE.SLOW) L.type = TYPE.NORMAL; // 减速道上开洞跳不过去，换成普通
     };
     // 道中间的洞
     let nHoles = 0;
-    if (name === 'teach') nHoles = r() < 0.25 + 0.4 * t ? 1 : 0;
+    if (name === 'warm') nHoles = r() < 0.4 ? 1 : 0;           // 热身段也偶尔有个小洞，绕一下就过
+    else if (name === 'teach') nHoles = 1 + (r() < 0.3 + 0.3 * t ? 1 : 0);
     else if (name === 'combo') nHoles = 1 + (r() < 0.5 ? 1 : 0);
-    else if (name !== 'warm') nHoles = 2 + (r() < 0.4 ? 1 : 0);
+    else if (name !== 'warm' && name !== 'teach') nHoles = 2 + (r() < 0.4 ? 1 : 0);
     for (let k = 0; k < nHoles && len > 70; k++) {
       const cands = lanes.map((L, i) => (okType(L) ? i : -1)).filter((i) => i >= 0);
       if (!cands.length) break;
       const i = cands[Math.floor(r() * cands.length)];
-      const hl = lerp(10, 24, r());
+      const hl = name === 'warm' ? lerp(8, 14, r()) : lerp(10, 24, r());
       const a = s0 + 20 + r() * (len - 40 - hl), b = a + hl;
       if (holeAt(lanes[i], a - 10, b + 10)) continue;
       if (!solid(i - 1, a - 8, b + 8) && !solid(i + 1, a - 8, b + 8)) continue;
+      {
+        // 开洞处整圈至少还留 2 条完整的道（断崖之后 3 条），不会只剩独木桥
+        let keep = 0;
+        for (let j = 0; j < LANES; j++) if (j !== i && solid(j, a - 6, b + 6)) keep++;
+        if (keep < (name === 'cliff' || name === 'beyond' ? 3 : 2)) continue;
+        if (!goodSolid(i, a - 6, b + 6)) continue;
+      }
       addHole(lanes[i], a, b);
     }
     // 不规则大缺口
-    const chance = name === 'combo' ? 0.25 + 0.15 * t : name === 'cliff' || name === 'beyond' ? 0.45 : 0;
+    const chance = name === 'teach' ? 0.15 : name === 'combo' ? 0.3 + 0.15 * t : name === 'cliff' || name === 'beyond' ? 0.45 : 0;
     if (len > 80 && r() < chance) {
       const w = 2 + Math.floor(r() * 3);
       const j = Math.floor(r() * LANES);
@@ -731,7 +1125,7 @@ export class Track {
       const plan = [];
       for (let k = 0; k < w; k++) {
         const i = (j + k) % LANES, L = lanes[i];
-        if (!L || L.type === TYPE.CRUMBLE || L.type === TYPE.SHORT) continue;
+        if (!L || L.type === TYPE.CRUMBLE || L.type === TYPE.SHORT || L.type === TYPE.SLOW) continue;
         const hl = lerp(16, 26, r());
         const a = start + k * step, b = a + hl;
         if (a < L.s0 + 15 || b > L.s1 - 15 || holeAt(L, a - 6, b + 6)) continue;
@@ -742,7 +1136,7 @@ export class Track {
         const lo = Math.min(...plan.map((x) => x[1])), hi = Math.max(...plan.map((x) => x[2]));
         let keep = 0;
         for (let i = 0; i < LANES; i++) if (!plan.some((x) => x[0] === i) && solid(i, lo, hi)) keep++;
-        if (keep >= 2) for (const [i, a, b] of plan) addHole(lanes[i], a, b);
+        if (keep >= (name === 'cliff' || name === 'beyond' ? 3 : 2) && goodSolid(plan.map((x) => x[0]), lo, hi)) for (const [i, a, b] of plan) addHole(lanes[i], a, b);
       }
     }
   }
@@ -809,19 +1203,34 @@ export class Track {
     if (s0 + len >= this.raceLength) { isFinish = true; len = 340; }
     const s1 = s0 + len;
 
+    // 分岔：到点了就从这一节开头不远处劈开（大空隙后的落脚节不劈；离终点太近不劈）
+    if (TRACK_STYLE.splits && !TRACK_STYLE.outside && !isFinish && !TEST_BOOST) {
+      if (this.nextSplit === undefined) this.nextSplit = lerp(SPLIT.first[0], SPLIT.first[1], r());
+      const sl = lerp(SPLIT.len[0], SPLIT.len[1], r());
+      if (!big && s0 >= this.nextSplit && s0 + 20 + sl < this.raceLength - 400) {
+        this.path.splits.push({ s0: s0 + 20, s1: s0 + 20 + sl, risky: r() < 0.5 ? -1 : 1, drop: r() < 0.5 ? -1 : 1 });
+        this.nextSplit = s0 + 20 + sl + lerp(SPLIT.every[0], SPLIT.every[1], r()) - sl;
+      }
+    }
+    const split = this.path.splits.find((sp) => sp.s0 < s1 && sp.s1 > s0) || null;
+
     // 预约这一节后面的空隙要不要是大空隙（预约了，这一节就要准备好加速赛道）
     let bigGapNext = 0;
     const cliffOk = !TRACK_STYLE.continuous || P.st.name === 'cliff' || P.st.name === 'beyond';
-    if (!first && !big && !isFinish && cliffOk && P.bigGap && r() < P.bigGap.chance * (TRACK_STYLE.continuous ? (this.mode === 'race' ? 0.6 : 0.3) * (P.st.name === 'cliff' ? 1 : 0.5) : 1) && s1 < this.raceLength - 600) {
+    const splitSoon = split || (this.nextSplit !== undefined && s1 + 400 > this.nextSplit);
+    // 两个整圈断口之间至少隔 700 米，不会连着几个大跳
+    const bigSpaced = !TEST_BOOST && (this.lastBigS === undefined || s1 - this.lastBigS > 700);
+    if (!first && !big && !isFinish && !splitSoon && bigSpaced && cliffOk && P.bigGap && r() < P.bigGap.chance * (TRACK_STYLE.continuous ? (this.mode === 'race' ? 0.6 : 0.3) * (P.st.name === 'cliff' ? 1 : 0.5) : 1) && s1 < this.raceLength - 600) {
       bigGapNext = lerp(P.bigGap.min, P.bigGap.max, r());
+      this.lastBigS = s1;
       // 大空隙前后把管道拉直，关键跳跃一定看得见落点
       this.path.calm.push([s1 - 50, s1 + bigGapNext + 70]);
     }
 
     // 哪些赛道存在
     // 热身和认识阶段始终 10 条赛道（不出现坑），之后才在目标数量上下浮动
-    let count = idx < 3 || isFinish || P.count >= 10 ? 10 : clamp(P.count + Math.round((r() - 0.5) * 2), 2, 10);
-    if (big || bigGapNext) count = Math.max(count, 4); // 大空隙前后留足赛道，保证有多条路线
+    let count = idx < 3 || isFinish || split || P.count >= 10 ? 10 : clamp(P.count + Math.round((r() - 0.5) * 2), 2, 10);
+    if (big || bigGapNext) count = Math.max(count, big ? 6 : 4); // 大空隙前后留足赛道；落脚的那一节多给几条，落点宽一些
     let present = count < 10 ? this.lanePattern(count) : new Array(LANES).fill(true);
     // 起跳赛道：过大空隙只能从加速赛道起跳（连跳是另一条备用路线）
     if (prev) {
@@ -831,7 +1240,8 @@ export class Track {
     }
 
     // 连贯模式·远处扣：路线中心（慢慢漂移）正对面的 3～4 条道扣掉，管道变得通透，但车附近完整
-    if (TRACK_STYLE.continuous && !isFinish && !big && !bigGapNext && present.filter(Boolean).length >= 8) {
+    const clusters = TRACK_STYLE.continuous && !TRACK_STYLE.outside && !isFinish && !(first && TRACK_STYLE.canyon);
+    if (!clusters && TRACK_STYLE.continuous && !isFinish && !big && !bigGapNext && !split && present.filter(Boolean).length >= 8) {
       if (this.routeC === undefined) this.routeC = 5;
       if (idx > 1 && r() < 0.5) this.routeC = (this.routeC + (r() < 0.5 ? 1 : -1) + LANES) % LANES;
       const far = (this.routeC + 5) % LANES;
@@ -840,6 +1250,31 @@ export class Track {
       if (prev) {
         const prevLanes = prev.lanes.map((L, i) => (L ? i : -1)).filter((i) => i >= 0);
         this.ensureRoutes(present, prevLanes);
+      }
+    }
+
+    // 石带成簇：一节只有一簇 3～4 条并排的道，或者“2 条、空 2 条、2 条”，其余都空着，能看到更多宇宙背景。
+    // 簇的中心 routeC 每节最多漂 1 条道，前后两节接得上；分岔前漂回管道底部（第 5 条道附近），两半都有路
+    if (clusters) {
+      if (this.routeC === undefined) this.routeC = 5;
+      const toSplit = this.nextSplit !== undefined && this.nextSplit - s0 < 600;
+      if (toSplit || split) {
+        if (this.routeC !== 5) this.routeC = (this.routeC + (shortestDelta(this.routeC, 5) > 0 ? 1 : -1) + LANES) % LANES;
+      } else if (idx > 1 && r() < 0.55) this.routeC = (this.routeC + (r() < 0.5 ? 1 : -1) + LANES) % LANES;
+      const c = this.routeC, name = P.st.name;
+      const late = name === 'cliff' || name === 'beyond';
+      const u = r();
+      let set;
+      if (big || bigGapNext || name === 'warm') set = [-1, 0, 1, 2];                 // 4 条（热身、大断口前后）
+      else if (u < (late ? 0.45 : 0.3)) set = [-1, 0, 1];                           // 3 条
+      else if (u < (late ? 0.65 : 0.65)) set = [-1, 0, 1, 2];                       // 4 条
+      else set = [-3, -2, 1, 2];                                                     // 2 条、空 2 条、2 条
+      present = new Array(LANES).fill(false);
+      for (const d of set) present[(c + d + LANES) % LANES] = true;
+      if (prev) {
+        const prevLanes = prev.lanes.map((L, i) => (L ? i : -1)).filter((i) => i >= 0);
+        const boosts = prevLanes.filter((i) => prev.lanes[i].type === TYPE.BOOST);
+        this.ensureRoutes(present, big && boosts.length ? boosts : prevLanes);
       }
     }
 
@@ -857,8 +1292,12 @@ export class Track {
       for (let i = 0; i < LANES; i++) if (present[i]) types[i] = this.pickType(P.weights);
       // 认识阶段：正在学的新赛道连着放 3 条，单独出现，容易看清
       if (P.st.name === 'teach' && r() < 0.85) {
-        const start = Math.floor(r() * LANES);
-        for (let k = 0; k < 3; k++) {
+        // 从有道的地方开始放（成簇以后大部分位置是空的）
+        const have = present.map((ok, i) => (ok ? i : -1)).filter((i) => i >= 0);
+        const start = have[Math.floor(r() * have.length)];
+        // 至少留 2 条普通的道（一簇只有 3～4 条，3 条全是碎裂道就没路了）
+        const nIntro = Math.max(1, Math.min(3, have.length - 2));
+        for (let k = 0; k < nIntro; k++) {
           const i = (start + k) % LANES;
           if (present[i]) types[i] = INTRO[P.st.intro];
         }
@@ -879,6 +1318,55 @@ export class Track {
       }
       // 认识阶段正在学的那种赛道不改，保证新类型能被看到
       if (!bigGapNext && !big && !TRACK_STYLE.outside) this.lureByBend(types, present, s1, P.st.name, P.st.name === 'teach' ? INTRO[P.st.intro] : -1);
+      // 障碍类的道（减速、冰刺、短台、碎裂）是让玩家找最优解的，不能整节都是：
+      // 至多一半是障碍类，至少留一条普通或加速道。超出的先把减速道改回普通（认识阶段正在学的那种最后才改）
+      const have = types.map((t, i) => (present[i] ? i : -1)).filter((i) => i >= 0);
+      // 普通、加速以外的都算（弹射也算：它会把车弹起来，不是“正常路”）
+      const isBad = (t) => t !== TYPE.NORMAL && t !== TYPE.BOOST;
+      const learning = P.st.name === 'teach' ? INTRO[P.st.intro] : -1;
+      let bad = have.filter((i) => isBad(types[i]));
+      // 普通/加速道至少占一半（向上取整），最少 1 条：2 条道时至少 1 条正常路
+      const allow = Math.max(0, have.length - Math.max(1, Math.ceil(have.length / 2)));
+      const order = (i) => (types[i] === learning ? 9 : types[i] === TYPE.SLOW ? 0 : types[i] === TYPE.BOUNCE ? 1 : 2);
+      bad.sort((a, b) => order(a) - order(b));
+      while (bad.length > allow) types[bad.shift()] = TYPE.NORMAL;
+    }
+
+    // 每一簇挨在一起的道：至少一条普通或加速道；并排的两条道类型不一样
+    if (!split && !isFinish && !(first && TRACK_STYLE.canyon) && !TRACK_STYLE.outside) {
+      const learning = P.st.name === 'teach' ? INTRO[P.st.intro] : -1;
+      for (const cl of laneClusters(present)) {
+        if (!cl.some((i) => isGoodType(types[i]))) {
+          // 找一条不是正在学的那种的道改成普通道（找不到就改中间那条）
+          const i = cl.find((j) => types[j] !== learning) ?? cl[Math.floor(cl.length / 2)];
+          types[i] = TYPE.NORMAL;
+        }
+        for (let k = 1; k < cl.length; k++) {
+          const a = cl[k - 1], b = cl[k], c = cl[k + 1];
+          if (types[b] !== types[a]) continue;
+          // 和左边一样：换成普通或加速里和左右都不一样的那个
+          const pick = [TYPE.NORMAL, TYPE.BOOST].find((t) => t !== types[a] && (c === undefined || t !== types[c]));
+          types[b] = pick ?? (types[a] === TYPE.NORMAL ? TYPE.BOOST : TYPE.NORMAL);
+        }
+      }
+    }
+
+    // 测试赛道：整圈都是加速道（峡谷那一节保持原样）
+    if (TEST_BOOST && !(first && TRACK_STYLE.canyon)) { present.fill(true); types.fill(TYPE.BOOST); }
+
+    // 分岔里：两半各管各的。稳路全是普通道；险路有 2 条加速道，后面还会开洞
+    if (split && !(idx < 2)) {
+      // 两半各 3 条道，贴着管道底部那道缝（第 2～4 条 / 第 5～7 条）
+      for (let i = 0; i < LANES; i++) {
+        present[i] = clusters ? i >= 2 && i <= 7 : true;
+        types[i] = TYPE.NORMAL;
+      }
+      const rk = split.risky < 0 ? [2, 3, 4] : [5, 6, 7];
+      const b1 = rk[Math.floor(r() * 3)];
+      let b2 = rk[Math.floor(r() * 3)];
+      if (b2 === b1) b2 = rk[(rk.indexOf(b1) + 2) % 3];
+      types[b1] = TYPE.BOOST;
+      types[b2] = TYPE.BOOST;
     }
 
     const lanes = new Array(LANES).fill(null);
@@ -902,18 +1390,30 @@ export class Track {
       L.type = TYPE.NORMAL; L.obstacles = []; L.s0 = s0; L.s1 = s1;
     }
 
-    if (TRACK_STYLE.continuous && !isFinish && idx >= 3) this.carveHoles(lanes, s0, s1, P);
+    if (TEST_BOOST) { /* 测试赛道不开洞 */ }
+    else if (split) this.carveSplitHoles(lanes, s0, s1, split);
+    else if (TRACK_STYLE.continuous && !isFinish && idx >= 3) this.carveHoles(lanes, s0, s1, P);
+
+    // 开场峡谷：谷底只有第 3～7 条道，管道上半圈的道快到峡谷尽头才一条条长出来；
+    // 下一节没有的道就不长了（不然刚长出来又断掉）
+    const canyon = first && TRACK_STYLE.canyon && !isFinish;
+    if (canyon) for (const k in CANYON_GROW) if (lanes[k]) lanes[k].s0 = canyonLaneStart(+k);
+    if (prev && prev.canyon) for (const k in CANYON_GROW) if (!lanes[k]) prev.lanes[k] = null;
+    if (TRACK_STYLE.continuous && !TRACK_STYLE.outside && !isFinish && !TEST_BOOST) this.breakLongRuns(lanes, s0, s1, P, split, canyon);
 
     // bigGap：这一节前面是大空隙（用于提示）；bigGapNext：这一节后面预约了大空隙
-    const sec = { s0, s1, lanes, isFinish, mesh: null, extras: [], bigGap: big, bigGapNext, fork };
+    const sec = { s0, s1, lanes, isFinish, mesh: null, extras: [], bigGap: big, bigGapNext, fork, canyon };
     // 新赛道第一次出现的那一节做个标记，游戏里会弹出说明
     if (idx === 2) sec.intro = TYPE.BOOST;
     if (P.st.name === 'teach' && P.st.intro !== this.lastIntro && types.includes(INTRO[P.st.intro])) {
       sec.intro = INTRO[P.st.intro];
       this.lastIntro = P.st.intro;
     }
-    this.buildSection(sec);
+    // 石带模式要知道前后两节是否接着同一条道（接着就不封口），所以等下一节生成了再建上一节的几何
+    if (!TRACK_STYLE.slab) this.queueBuild(sec, null);
+    else if (prev && !prev.queued) this.queueBuild(prev, sec);
     this.sections.push(sec);
+    if (TRACK_STYLE.slab && isFinish) this.queueBuild(sec, null);
     this.genS = s1;
     if (isFinish) {
       this.finishS = s0 + 50;
@@ -940,12 +1440,38 @@ export class Track {
     return groups;
   }
 
-  buildSection(sec) {
+  queueBuild(sec, next) {
+    sec.queued = true;
+    sec.parts = [];
+    this.jobs.push({ sec, it: this.buildSection(sec, next) });
+  }
+
+  // 每帧调用：按队列顺序建几何，离车 350 米以内的节必须马上建完，其余每帧最多花 budget 毫秒
+  runJobs(carS, budget = 3) {
+    const t0 = performance.now();
+    while (this.jobs.length) {
+      const job = this.jobs[0];
+      if (job.sec.disposed) { this.jobs.shift(); continue; }
+      const urgent = job.sec.s0 < carS + 350;
+      if (!urgent && performance.now() - t0 > budget) break;
+      if (job.it.next().done) this.jobs.shift();
+    }
+  }
+
+  // 建一节的几何：每建完一条道就 yield 一次（交给 runJobs 决定要不要留到下一帧）
+  *buildSection(sec, next = null) {
     const path = this.path;
     const gb = new GeoBuilder();
+    const prev = this.sections[this.sections.indexOf(sec) - 1];
+    // 第 i 条道和前一节 / 后一节是不是无缝接着的
+    const flows = (L) => L && L.type !== TYPE.CRUMBLE;
+    const contPrev = (i) => prev && prev.s1 === sec.s0 && flows(prev.lanes[i]) && prev.lanes[i].s1 === prev.s1;
+    const contNext = (i) => next && next.s0 === sec.s1 && flows(next.lanes[i]) && next.lanes[i].s0 === next.s0;
+    const solid = (L, a, b) => flows(L) && L.s0 <= a && L.s1 >= b && !(L.holes && L.holes.some(([h0, h1]) => h0 < b && h1 > a));
+    const ends = []; // 石带断开的端头：{ i 第几条道, s 位置, dir 石带朝哪边延伸 }
     const rocky = TRACK_STYLE.slab ? 0 : TRACK_STYLE.rocky;
     const targets = new Map();
-    for (const L of sec.lanes) if (L) targets.set(L, L.type === TYPE.CRUMBLE ? new GeoBuilder() : gb);
+    for (const L of sec.lanes) if (L) targets.set(L, new GeoBuilder());
     const edgeOf = new Map(); // 每条赛道：[左边是陨石外缘, 右边是陨石外缘, 收边函数, 分块数]
     if (rocky) {
       for (const g of this.rockGroups(sec.lanes, sec.s0)) {
@@ -974,9 +1500,26 @@ export class Track {
       // 被洞切开的几段
       const pieces = [];
       { let a = L.s0; for (const [h0, h1] of (L.holes || []).slice().sort((x, y) => x[0] - y[0])) { if (h0 > a) pieces.push([a, h0]); a = Math.max(a, h1); } if (L.s1 > a) pieces.push([a, L.s1]); }
+      // 峡谷里谷底盖住的部分不用建石带，石带从谷底断口下面一点开始
+      if (sec.canyon) for (const p of pieces) p[0] = Math.max(p[0], canyonFloorEnd(L.i + 0.5) - 12);
       if (TRACK_STYLE.slab) {
-        // 石板平台：每条道一块石板，顶面平整，侧面和底面是不规则的岩石，厚度 TRACK_STYLE.slab 米
-        for (const [p0, p1] of pieces) target.rockBox(path, a0, a1, p0, p1, 0, TRACK_STYLE.slab, topSlot, SLOT_SIDE, sec.isFinish ? 4 : 16);
+        // 石带：每条道一条不规整的石头，和前后两段无缝相连，只有真的断开处才有端面
+        const T = TRACK_STYLE.slab;
+        for (const [p0, p1] of pieces) {
+          if (L.type === TYPE.CRUMBLE) { target.shardLane(path, L.i, p0, p1, topSlot, SLOT_SIDE); continue; }
+          const cs = !(p0 === sec.s0 && L.s0 === sec.s0 && flows(L) && contPrev(L.i));
+          const ce = !(p1 === sec.s1 && L.s1 === sec.s1 && flows(L) && contNext(L.i));
+          target.stoneLane(path, L.i, p0, p1, T, topSlot, SLOT_SIDE, cs, ce);
+          if (flows(L)) { if (cs) ends.push({ i: L.i, s: p0, dir: 1 }); if (ce) ends.push({ i: L.i, s: p1, dir: -1 }); }
+          // 钟乳石：沿两侧边缘往外垂；断开处（洞的边缘、道的尽头）垂得更密、更长
+          for (const [edgeS, dir, open] of [[p0, 1, cs], [p1, -1, ce]]) {
+            if (!open) continue;
+            for (let m = 0; m < 2; m++) {
+              const k = vnoise(edgeS * 0.7 + m * 3.3, L.i + m);
+              target.stalactite(path, edgeS + dir * (2.5 + 2 * k), L.i + 0.3 + 0.4 * m, -T * 0.9, 1.5 + 3 * k, 0.4 + 0.3 * k, SLOT_SIDE);
+            }
+          }
+        }
       } else if (L.holes) {
         for (const [p0, p1] of pieces) target.curvedBox(path, a0, a1, p0, p1, -THICK, 0, topSlot, SLOT_SIDE, sec.isFinish ? 4 : 16);
       } else if (rocky) {
@@ -1008,10 +1551,16 @@ export class Track {
         target.curvedBox(path, a0, a1, Math.max(L.s1 - 0.6, L.s0), L.s1, 0, 0.06, SLOT_EDGE + L.type, SLOT_EDGE + L.type);
       }
       for (const os of L.obstacles) {
-        if (TRACK_STYLE.spikes) this.addSpikes(sec, path, a0, a1, os);
+        if (TRACK_STYLE.slab) this.addRocks(sec, path, a0, a1, os);
+        else if (TRACK_STYLE.spikes) this.addSpikes(sec, path, a0, a1, os);
         else target.curvedBox(path, a0 + 0.04, a1 - 0.04, os - 0.5, os + 0.5, 0, WALL_H, SLOT_WALL, SLOT_WALL);
       }
-      if (target !== gb) {
+      if (L.type !== TYPE.CRUMBLE) {
+        if (target.pos.length) { const m = new THREE.Mesh(target.build(), this.mats); sec.parts.push(m); this.group.add(m); }
+        yield;
+        continue;
+      }
+      {
         const mats = this.mats.slice();
         for (const k of [TYPE.CRUMBLE, SLOT_SIDE, SLOT_EDGE + TYPE.CRUMBLE]) {
           mats[k] = this.mats[k].clone();
@@ -1023,12 +1572,70 @@ export class Track {
         L.outward = path.r.clone();
         this.group.add(L.mesh);
       }
+      yield;
     }
+    if (TRACK_STYLE.slab) {
+      // 石桥：每条石带断开的一头，和旁边一条还连着的道用一座短石桥连起来（像草图里那样钩在一起）
+      const T = TRACK_STYLE.slab;
+      for (const { i, s: e, dir } of ends) {
+        const A = sec.lanes[i];
+        const w = 3.5 + 4 * vnoise(e * 0.13, i * 3.9);
+        const lo = dir > 0 ? e + 1 : e - 1 - w - 2.4, hi = lo + w + 2.4;
+        if (!solid(A, lo, hi)) continue;
+        const order = vnoise(e * 0.31, i) < 0.5 ? [1, -1] : [-1, 1];
+        for (const d of order) {
+          const n = (i + d + LANES) % LANES;
+          if (!solid(sec.lanes[n], lo, hi)) continue;
+          const b = (lo + hi) / 2;
+          const left = d > 0 ? i : i - 1; // 桥在第 left 条和第 left+1 条道之间
+          if (path.splitAt(b) && (left + LANES) % LANES % 5 === 4) continue; // 不跨过分岔的缝
+          gb.stoneBridge(path, left + 1 - laneInset(left, b, 1) - 0.08, left + 1 + laneInset(left + 1, b, 0) + 0.08, b, w, T * 0.7, 0.05, SLOT_SIDE, b * 0.1 + i, TYPE.NORMAL);
+          break;
+        }
+      }
+    }
+    if (sec.canyon) gb.canyon(path, TYPE.NORMAL, SLOT_SIDE);
     sec.mesh = new THREE.Mesh(gb.build(), this.mats);
     this.group.add(sec.mesh);
   }
 
+  // 峡谷里车能左右开到哪里（赛道坐标 a 的范围）；不受限制时返回 null
+  steerRange(s, a) {
+    // 分岔里中间的缝过不去：车在哪一半就只能在哪一半
+    if (this.path.splitAt(s)) return wrapLane(a) < 5 ? [0.3, 4.7] : [5.3, 9.7];
+    const sec = this.sections[0];
+    if (!sec || !sec.canyon || s > sec.s1 || s < sec.s0) return null;
+    let lo = 5, hi = 5;
+    while (lo > 0 && this.laneAt(s, lo - 1)) lo--;
+    while (hi < LANES - 1 && this.laneAt(s, hi + 1)) hi++;
+    if (lo === 0 && hi === LANES - 1) return null;
+    return [lo + 0.3, hi + 1 - 0.3];
+  }
+
   // 障碍做成一排竖起的冰刺（碰撞范围不变：整条赛道宽、高 WALL_H）
+  // 石头主题：障碍是一排岩石块，贴图和障碍道路面一样（同一种颜色的石头），大小不一、挤在一起挡住整条道
+  addRocks(sec, path, a0, a1, os) {
+    if (!ROCK_GEO) ROCK_GEO = rockLump();
+    const W = trackRadius() * laneAng() * (a1 - a0);
+    const n = Math.max(3, Math.round(W / 1.3));
+    const p = new THREE.Vector3(), up = new THREE.Vector3(), q = new THREE.Quaternion(), Y = new THREE.Vector3(0, 1, 0);
+    for (let k = 0; k < n; k++) {
+      const a = a0 + 0.08 + (k + 0.5) * (a1 - a0 - 0.16) / n + (vnoise(k * 2.3, os * 0.2) - 0.5) * 0.04;
+      const s = os + (vnoise(k * 1.7, os * 0.1) - 0.5) * 0.6;
+      path.point(s, a, -0.25, p);
+      up.copy(path.r).negate();
+      const m = new THREE.Mesh(ROCK_GEO, this.mats[TYPE.OBSTACLE]);
+      m.position.copy(p);
+      q.setFromAxisAngle(Y, vnoise(k * 4.1, os) * 6.28);
+      m.quaternion.setFromUnitVectors(Y, up).multiply(q);
+      const hgt = WALL_H * (0.62 + 0.3 * vnoise(k * 3.1, os * 0.3)) + 0.25;   // 露出路面 1.0～1.5 米
+      const wid = 0.75 + 0.35 * vnoise(k, 2);
+      m.scale.set(wid, hgt / 1.7, wid * (0.8 + 0.4 * vnoise(2, k)));
+      this.group.add(m);
+      sec.extras.push(m);
+    }
+  }
+
   addSpikes(sec, path, a0, a1, os) {
     if (!SPIKE_GEO) SPIKE_GEO = new THREE.ConeGeometry(0.42, 1, 7, 1).translate(0, 0.5, 0);
     const n = Math.max(6, Math.round(trackRadius() * laneAng() * (a1 - a0) / 0.95)); // 冰刺排满整条赛道宽度
@@ -1044,7 +1651,7 @@ export class Track {
       const m = new THREE.Mesh(SPIKE_GEO, this.mats[SLOT_WALL]);
       m.position.copy(p);
       m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up).multiply(q);
-      const hgt = WALL_H * (1.0 + 0.5 * vnoise(k * 3.1, os * 0.3));
+      const hgt = WALL_H * (0.62 + 0.3 * vnoise(k * 3.1, os * 0.3)); // 1.0～1.5 米：比碰撞高度（WALL_H）矮，跳过去看起来就是真的越过了
       m.scale.set(0.8 + 0.5 * vnoise(k, 2), hgt, 0.8 + 0.5 * vnoise(2, k));
       this.group.add(m);
       sec.extras.push(m);
@@ -1113,6 +1720,7 @@ export class Track {
 
   update(carS, time, dt) {
     while (!this.done && this.genS < carS + 1500) this.generate();
+    this.runJobs(carS);
     while (this.sections.length && this.sections[0].s1 < carS - 80) {
       const sec = this.sections.shift();
       this.disposeSection(sec);
@@ -1139,15 +1747,19 @@ export class Track {
   }
 
   disposeSection(sec) {
-    this.group.remove(sec.mesh);
-    sec.mesh.geometry.dispose();
+    sec.disposed = true;
+    for (const m of sec.parts || []) { this.group.remove(m); m.geometry.dispose(); }
+    if (sec.mesh) {
+      this.group.remove(sec.mesh);
+      sec.mesh.geometry.dispose();
+    }
     for (const L of sec.lanes) {
       if (L && L.mesh) {
         this.group.remove(L.mesh);
         L.mesh.geometry.dispose();
       }
     }
-    for (const e of sec.extras) { this.group.remove(e); if (e.geometry !== SPIKE_GEO) e.geometry.dispose(); }
+    for (const e of sec.extras) { this.group.remove(e); if (e.geometry !== SPIKE_GEO && e.geometry !== ROCK_GEO) e.geometry.dispose(); }
   }
 
   dispose() {

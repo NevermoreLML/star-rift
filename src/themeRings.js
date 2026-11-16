@@ -3,7 +3,7 @@
 // 一颗年轻的橙色恒星（J1407 是 K 型星）从侧面照过来，管道周围漂浮着大大小小的陨石。
 // 在网址后加 ?theme=rings 启用。
 import * as THREE from './lib.js';
-import { TRACK_STYLE } from './track.js';
+import { TRACK_STYLE, CANYON } from './track.js';
 import { ASSET_BASE } from './assets.js';
 
 const DIR = ASSET_BASE + 'themes/rings/';
@@ -83,8 +83,8 @@ function makeStar() {
   g.addColorStop(0, 'rgba(255,250,235,1)');
   g.addColorStop(0.12, 'rgba(255,236,200,1)');
   g.addColorStop(0.2, 'rgba(255,190,120,0.55)');
-  g.addColorStop(0.5, 'rgba(255,140,60,0.12)');
-  g.addColorStop(1, 'rgba(255,120,40,0)');
+  g.addColorStop(0.42, 'rgba(255,140,60,0.1)');
+  g.addColorStop(0.75, 'rgba(255,120,40,0)');   // 边缘之前就完全透明，泛光不会显出方形的边
   x.fillStyle = g;
   x.fillRect(0, 0, 256, 256);
   const tex = new THREE.CanvasTexture(c);
@@ -92,6 +92,81 @@ function makeStar() {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
   s.scale.setScalar(420);
   return s;
+}
+
+// 背景大图：一块远处的平面，贴一张太空照片，四周柔和地淡出，融进星空。
+// additive = 黑底的图（比如黑洞）直接叠加发光；否则按透明度混合（星云照片本身铺满整个画面）
+function makeBackdrop(tex, w, h, additive, fade) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false,
+    blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    uniforms: { map: { value: tex }, fade: { value: fade }, gain: { value: 1 } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform sampler2D map; uniform vec2 fade; uniform float gain; varying vec2 vUv;
+      void main(){
+        vec4 c = texture2D(map, vUv);
+        float a = smoothstep(0.0, fade.x, vUv.x) * smoothstep(1.0, 1.0 - fade.x, vUv.x) * smoothstep(0.0, fade.y, vUv.y) * smoothstep(1.0, 1.0 - fade.y, vUv.y);
+        gl_FragColor = vec4(c.rgb * gain, a);
+        #include <colorspace_fragment>
+      }`,
+  }));
+  m.renderOrder = -1;
+  m.frustumCulled = false;
+  return m;
+}
+
+// 弹射道的喷气：车被弹起来的那一刻，从车底下猛地喷出一股白色的气（平时不喷）
+function makeGas(scene) {
+  const N = 1400;
+  const pos = new Float32Array(N * 3), size = new Float32Array(N), alpha = new Float32Array(N);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('size', new THREE.BufferAttribute(size, 1));
+  g.setAttribute('alpha', new THREE.BufferAttribute(alpha, 1));
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false,
+    vertexShader: `attribute float size; attribute float alpha; varying float vA;
+      void main(){ vA = alpha; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = size * 700.0 / -mv.z; gl_Position = projectionMatrix * mv; }`,
+    fragmentShader: `varying float vA;
+      void main(){ float d = length(gl_PointCoord - 0.5); float a = smoothstep(0.5, 0.0, d); a *= a;
+        gl_FragColor = vec4(vec3(0.62, 0.68, 0.76), a * vA); }`,  // 偏灰蓝的气，在白色路面上也看得见
+  });
+  const pts = new THREE.Points(g, mat);
+  pts.frustumCulled = false;
+  scene.add(pts);
+  const P = Array.from({ length: N }, () => ({ p: new THREE.Vector3(), v: new THREE.Vector3(), life: 0, max: 1, s0: 1 }));
+  let cur = 0, time = 0;
+  const up = new THREE.Vector3(), at = new THREE.Vector3();
+  return {
+    // 弹射：从 pos 沿 up 方向猛地喷出一股气（很多团，又快又散，越升越大、越淡）
+    jet(pos, up) {
+      for (let k = 0; k < 140; k++) {
+        const q = P[cur]; cur = (cur + 1) % N;
+        q.p.copy(pos).add(at.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(1.4));
+        const fast = Math.random();
+        q.v.copy(up).multiplyScalar(8 + 16 * fast)
+          .add(at.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(5 * (1 - 0.6 * fast)));
+        q.life = q.max = 0.6 + Math.random() * 0.8;
+        q.s0 = 0.8 + Math.random() * 1.0;
+      }
+    },
+    update(dt) {
+      time += dt;
+      for (let i = 0; i < N; i++) {
+        const q = P[i];
+        if (q.life > 0) {
+          q.life -= dt;
+          q.p.addScaledVector(q.v, dt);
+          q.v.multiplyScalar(1 - dt * 1.2);
+        }
+        const t = 1 - Math.max(0, q.life) / q.max;
+        pos[i * 3] = q.p.x; pos[i * 3 + 1] = q.p.y; pos[i * 3 + 2] = q.p.z;
+        size[i] = q.life > 0 ? q.s0 * (1 + 3.5 * t) : 0;
+        alpha[i] = q.life > 0 ? 0.85 * Math.min(1, t * 8) * (1 - t) : 0;
+      }
+      g.attributes.position.needsUpdate = g.attributes.size.needsUpdate = g.attributes.alpha.needsUpdate = true;
+    },
+  };
 }
 
 // 三向投影贴图：用世界坐标采样，大小不同的石头纹理密度一致；再叠一层大尺度的明暗变化
@@ -134,19 +209,34 @@ function rockGeometry() {
 export function setupRingsTheme({ scene, mats, bg, bloom }) {
   // 赛道：陨石平台，无发光条，障碍是冰刺
   // 玩法和管道完全不变，只是平台换成石头：每条道一块石板，没有发光条，障碍是冰刺
-  TRACK_STYLE.slab = 1.4;     // 石板厚度（米），和原来的平台差不多大
+  TRACK_STYLE.slab = 1.8;     // 石带本体厚度（米），底下还会往下垂
   TRACK_STYLE.continuous = true; // 管道连贯：平时没有整圈断口，难点来自扣掉的部分；断崖阶段偶尔有整圈断口
   TRACK_STYLE.edges = false;
   TRACK_STYLE.spikes = true;
   TRACK_STYLE.lines = false;
   TRACK_STYLE.outside = false;
+  TRACK_STYLE.canyon = true;  // 开场在一块巨大陨石的 U 形山谷里，开到尽头接上管道
+  TRACK_STYLE.splits = true;  // 每隔 2～2.5 公里管道劈成左右两半（一稳一险），之后再合拢
 
   const loader = new THREE.TextureLoader();
-  const lanes = ['lane_0_normal', 'lane_1_boost', 'lane_2_slow', 'lane_3_obstacle', 'lane_4_short', 'lane_5_crumble', 'lane_6_bounce'];
-  lanes.forEach((n, i) => {
+  // 各种道的贴图：
+  //   0 普通 灰石头（原 lane_0）· 1 加速 白浅蓝冰（Ice004 调色）· 2 减速 黄色砂岩（原 lane_4）· 3 障碍 橙红沙地（原 lane_2）
+  //   4 短台 橙褐岩石（Rock029）· 5 碎裂 普通路的灰石头碎成石片（track.js shardLane）· 6 弹射 月球表面 moon.jpg，被弹起时喷气（见下面 gas）
+  const LANE_LOOK = [
+    { map: 'lane_0_normal.jpg', n: 'lane_0_normal_n.jpg', rough: 0.92 },
+    { map: 'acg_1w.jpg', n: 'acg_1_n.jpg', rough: 0.25, metal: 0.1 },
+    { map: 'lane_4_short.jpg', n: 'lane_4_short_n.jpg', rough: 0.92 },
+    { map: 'lane_2_slow.jpg', n: 'lane_2_slow_n.jpg', rough: 0.92 },
+    { map: 'acg_4.jpg', n: 'acg_4_n.jpg', rough: 0.9 },
+    { map: 'lane_0_normal.jpg', n: 'lane_0_normal_n.jpg', rough: 0.92 },   // 碎裂：普通路的石头，碎成一块块（几何上真的有缝）
+    { map: 'moon.jpg', n: 'moon_n.jpg', rough: 0.95 },   // 弹射：月球表面（3dtextures.me Moon 002，CC0）
+  ];
+  LANE_LOOK.forEach((o, i) => {
     mats[i] = new THREE.MeshStandardMaterial({
-      map: texture(loader, n + '.jpg'), normalMap: texture(loader, n + '_n.jpg', false),
-      roughness: i === 1 ? 0.3 : i === 6 ? 0.6 : 0.92, metalness: i === 1 ? 0.15 : 0.03, side: THREE.DoubleSide,
+      map: texture(loader, o.map), normalMap: texture(loader, o.n, false),
+      roughness: o.rough, metalness: o.metal || 0.03, side: THREE.DoubleSide,
+      normalScale: new THREE.Vector2(1.6, 1.6),
+      emissive: o.emissive || 0x000000, emissiveIntensity: o.ei || 0,
     });
   });
   // 陨石本体和普通跑道是同一种岩石，按世界坐标三向投影贴图，巨石上不会拉伸；跑道只是这块岩石表面的一部分
@@ -159,7 +249,8 @@ export function setupRingsTheme({ scene, mats, bg, bloom }) {
   for (let i = 8; i <= 14; i++) mats[i] = line;
   mats[15] = new THREE.MeshStandardMaterial({
     map: texture(loader, 'wall.jpg'), normalMap: texture(loader, 'wall_n.jpg', false), color: 0xdcf0ff,
-    roughness: 0.12, metalness: 0.1, transparent: true, opacity: 0.93,
+    roughness: 0.12, metalness: 0.1, transparent: true, opacity: 0.93, side: THREE.DoubleSide,
+    emissive: 0x4fc8ff, emissiveIntensity: 0.18, // 冰微微发光，冰刺前的起跳裂纹也看得清
   });
   if (mats[16].emissiveIntensity !== undefined) mats[16].emissiveIntensity = 0.08;
 
@@ -193,9 +284,10 @@ export function setupRingsTheme({ scene, mats, bg, bloom }) {
   placePlanet(planetDir);
   // 行星缓慢地跟着赛道大方向走：总在前方偏左上约 25° 的位置，开车时经常能从平台缝隙里看到它
   const UP = new THREE.Vector3(0, 1, 0);
-  const want = new THREE.Vector3(), left = new THREE.Vector3(), up2 = new THREE.Vector3();
+  const want = new THREE.Vector3(), left = new THREE.Vector3(), up2 = new THREE.Vector3(), avgT = new THREE.Vector3();
   function planetTarget(path, carS) {
-    const t = path.frame(carS + 250).t;
+    // 取前方很长一段路的平均方向：赛道一时的小弯不会让背景跟着晃
+    const t = avgT.copy(path.frame(carS + 300).t).add(path.frame(carS + 900).t).add(path.frame(carS + 1600).t).normalize();
     left.crossVectors(UP, t);
     if (left.lengthSq() < 1e-4) left.set(1, 0, 0);
     left.normalize();
@@ -203,6 +295,39 @@ export function setupRingsTheme({ scene, mats, bg, bloom }) {
     return want.copy(t).addScaledVector(left, 0.36).addScaledVector(up2, 0.26).normalize();
   }
   bg.group.add(sys);
+
+  // 每一局随机一个背景主题（整局不变）：带环行星 / 船底座星云“宇宙悬崖” / 黑洞。
+  // 网址加 &sky=planet|nebula|blackhole 可以指定
+  const skyTex = (name) => { const t = loader.load(DIR + name); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t; };
+  const cliffs = makeBackdrop(skyTex('sky_cliffs.jpg'), 4600, 2875, false, new THREE.Vector2(0.16, 0.2)); // 1920×1200
+  const hole = makeBackdrop(skyTex('sky_blackhole.jpg'), 5200, 5200, true, new THREE.Vector2(0.12, 0.12)); // 侧视、带引力光弧的那一帧
+  hole.material.uniforms.gain.value = 1.25;
+  bg.group.add(cliffs, hole);
+  const SKIES = {
+    planet: { obj: sys, light: null },
+    nebula: { obj: cliffs, light: new THREE.Color(0xffd6c2) },
+    blackhole: { obj: hole, light: new THREE.Color(0xffb27a) },
+  };
+  const lightBase = [];
+  scene.traverse((o) => { if (o.isAmbientLight || o.isHemisphereLight || o.isDirectionalLight) lightBase.push([o, o.color.clone()]); });
+  let sky = 'planet';
+  function pickSky() {
+    const want = new URLSearchParams(location.search).get('sky');
+    const names = Object.keys(SKIES);
+    sky = SKIES[want] ? want : names[Math.floor(Math.random() * names.length)];
+    for (const k of names) SKIES[k].obj.visible = k === sky;
+    // 光色往背景的颜色偏一点
+    for (const [o, base] of lightBase) { o.color.copy(base); if (SKIES[sky].light) o.color.lerp(SKIES[sky].light, 0.35); }
+  }
+  // 背景图放在行星原来的位置（前方偏左上，跟着赛道大方向慢慢转），正对镜头所在的中心
+  function placeSky(dir) {
+    const o = SKIES[sky].obj;
+    if (o === sys) return;
+    o.position.copy(dir).multiplyScalar(2300);
+    o.up.set(0, 1, 0);
+    o.lookAt(bg.group.position); // lookAt 用的是世界坐标：背景组就在镜头处
+  }
+  const gas = makeGas(scene);
   const star = makeStar();
   star.position.copy(STAR_DIR).multiplyScalar(2400);
   bg.group.add(star);
@@ -232,11 +357,14 @@ export function setupRingsTheme({ scene, mats, bg, bloom }) {
     o.spin = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.04);
   }
   const dummy = new THREE.Object3D();
+  const toCam = new THREE.Vector3();
   const pos = new THREE.Vector3();
   let lastPath = null;
 
   function spawn(o, carS, init) {
     o.s = carS + (init ? -30 + Math.random() * 450 : 380 + Math.random() * 60);
+    // 峡谷里两边是岩壁，碎石放到峡谷尽头之后
+    if (TRACK_STYLE.canyon && o.s < CANYON.wall1) o.s = CANYON.wall1 + Math.random() * 450;
     o.a = TRACK_STYLE.outside ? -14 + Math.random() * 38 : Math.random() * 10; // 外表面模式：四面八方都有
     const big = Math.random();
     o.scale = 0.3 + big * big * big * 7;
@@ -247,16 +375,20 @@ export function setupRingsTheme({ scene, mats, bg, bloom }) {
   }
 
   return {
-    update(dt, path, carS) {
+    jet: (pos, up) => gas.jet(pos, up),
+    update(dt, path, carS, track, camera) {
       if (path !== lastPath) {
         lastPath = path;
+        pickSky();
         for (const o of items) spawn(o, carS, true);
         for (const o of giants) spawnGiant(o, carS, true);
         planetDir.copy(planetTarget(path, carS));
       }
-      // 时间常数约 8 秒，转得很慢，看起来像是赛道在绕着它走
-      planetDir.lerp(planetTarget(path, carS), 1 - Math.exp(-dt / 8)).normalize();
+      // 时间常数约 30 秒：背景基本固定在天上，只在赛道长时间往别处拐时才慢慢挪过去
+      planetDir.lerp(planetTarget(path, carS), 1 - Math.exp(-dt / 30)).normalize();
       placePlanet(planetDir);
+      placeSky(planetDir);
+      gas.update(dt);
       for (let i = 0; i < COUNT; i++) {
         const o = items[i];
         if (o.s < carS - 30) spawn(o, carS, false);
@@ -276,7 +408,9 @@ export function setupRingsTheme({ scene, mats, bg, bloom }) {
         path.point(o.s, o.a, TRACK_STYLE.outside ? o.off : -o.off, pos);
         dummy.position.copy(pos);
         dummy.rotation.copy(o.rot);
-        dummy.scale.setScalar(o.scale);
+        // 挡在背景主角（行星 / 星云 / 黑洞）前面的大陨石不画，让玩家看得见
+        const blk = toCam.copy(pos).sub(bg.group.position).normalize().dot(planetDir) > 0.93;
+        dummy.scale.setScalar(blk ? 0 : o.scale);
         dummy.updateMatrix();
         giant.setMatrixAt(i, dummy.matrix);
       }

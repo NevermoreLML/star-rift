@@ -188,18 +188,25 @@ function gatherWheel(root, center, pick) {
 // 可选：wheelCenters（模型坐标里的轮心）让轮子随车速转；groundY 指定模型里地面高度；
 // trails（模型坐标里的拖尾起点，空数组表示不要拖尾）；模型里名为 nozzle_L / nozzle_R 的空节点也可作为拖尾起点
 export async function applyCarArt(car, art) {
-  const c = art.car || {};
-  await each([['car', c.model]], async (key, file) => {
-    const loaded = await loadModel(file);
+  // car：平时的车；car2：变身后的超跑（可选）。两台都挂在 car.body 下面，用 car.setForm(0 / 1) 切换
+  car.forms = [];
+  for (const key of ['car', 'car2']) {
+    const c = art[key] || {};
+    if (!c.model) continue;
+    let loaded;
+    try { loaded = await loadModel(c.model); } catch (e) { console.warn('car model failed', key, e); continue; }
+    // hide：模型里不要的零件（按名字的开头匹配），比如原作者留在车外面的散件
+    if (Array.isArray(c.hide)) loaded.traverse((o) => { if (c.hide.some((h) => o.name.startsWith(h))) o.visible = false; });
     const wheels = (c.wheelCenters || []).map((p) => gatherWheel(loaded, new THREE.Vector3(...p), c.wheelPick || 0.3));
     // 包一层，方便旋转、缩放、对齐，不改模型自己的变换
     const model = new THREE.Group();
     model.add(loaded);
     if (c.rotateY) loaded.rotation.y = THREE.MathUtils.degToRad(c.rotateY);
     let k = c.scale || 1;
+    let box = null;
     if (c.length) {
       // 指定了车长：按包围盒自动缩放，并把车底中心放到原点
-      const box = new THREE.Box3().setFromObject(loaded);
+      box = new THREE.Box3().setFromObject(loaded, !!c.preciseBox); // preciseBox：按顶点算，模型里有旋转过的零件时更准
       const size = box.getSize(new THREE.Vector3());
       k *= c.length / size.z;
       const ground = c.groundY ?? box.min.y;
@@ -207,36 +214,60 @@ export async function applyCarArt(car, art) {
     }
     // 模型按游戏单位（≈米）制作；外层赛车组整体放大了 1.25 倍，这里抵消掉
     model.scale.setScalar(k / car.group.scale.x);
-    // 给模型材质加上环境反射，深色车漆在暗处也能看出高光和轮廓
-    if (car.envMap) {
-      loaded.traverse((o) => {
-        if (!o.isMesh) return;
-        for (const m of [].concat(o.material)) {
-          if (m && 'envMap' in m) { m.envMap = car.envMap; m.envMapIntensity = c.envIntensity ?? 0.8; m.needsUpdate = true; }
-        }
-      });
-    }
-    for (const ch of car.body.children) ch.visible = false;
+    // 收集材质（变身时让整台车发光用），加上环境反射
+    const mats = [];
+    loaded.traverse((o) => {
+      if (!o.isMesh) return;
+      o.material = [].concat(o.material).map((m) => m.clone()).reduce((a, m, i, arr) => (arr.length === 1 ? m : arr), null);
+      for (const m of [].concat(o.material)) {
+        if (!m) continue;
+        if (car.envMap && 'envMap' in m) { m.envMap = car.envMap; m.envMapIntensity = c.envIntensity ?? 0.8; m.needsUpdate = true; }
+        if ('emissive' in m) mats.push({ m, e: m.emissive.clone(), ei: m.emissiveIntensity });
+      }
+    });
     car.body.add(model);
     car.group.updateMatrixWorld(true);
-    // 轮子：转速 = 车速 / 轮半径；车头朝 -Z 的模型转了 180°，转向要反过来
-    car.wheels = wheels;
-    car.wheelRadius = (c.wheelRadius || 0.33) * k;
-    car.wheelDir = Math.cos(THREE.MathUtils.degToRad(c.rotateY || 0)) >= 0 ? 1 : -1;
     const toCar = (v) => car.group.worldToLocal(v);
-    if (Array.isArray(c.trails)) {
-      car.nozzles.length = 0;
-      for (const p of c.trails) car.nozzles.push(toCar(loaded.localToWorld(new THREE.Vector3(...p))));
-    }
+    const nozzles = [];
+    if (Array.isArray(c.trails)) for (const p of c.trails) nozzles.push(toCar(loaded.localToWorld(new THREE.Vector3(...p))));
     ['nozzle_L', 'nozzle_R'].forEach((name, i) => {
       const node = model.getObjectByName(name);
-      if (node) car.nozzles[i] = toCar(node.getWorldPosition(new THREE.Vector3()));
+      if (node) nozzles[i] = toCar(node.getWorldPosition(new THREE.Vector3()));
     });
-    if (c.trailColor) car.trailColor = c.trailColor;
-    if (c.trailWidth !== undefined) car.trailWidth = c.trailWidth;
-    if (c.trailIntensity !== undefined) car.trailIntensity = c.trailIntensity;
-    if (c.trailLength !== undefined) car.trailLength = c.trailLength;
-  });
+    car.forms.push({
+      model, mats, wheels, nozzles,
+      wheelRadius: (c.wheelRadius || 0.33) * k,
+      wheelDir: Math.cos(THREE.MathUtils.degToRad(c.rotateY || 0)) >= 0 ? 1 : -1,
+      trailColor: c.trailColor, trailWidth: c.trailWidth, trailIntensity: c.trailIntensity, trailLength: c.trailLength,
+    });
+  }
+  if (!car.forms.length) return;
+  for (const ch of car.body.children) if (!car.forms.some((f) => f.model === ch)) ch.visible = false;
+  // 切换车身：轮子、拖尾起点、拖尾样式跟着换
+  car.setForm = (i) => {
+    const f = car.forms[Math.min(i, car.forms.length - 1)];
+    car.forms.forEach((g) => { g.model.visible = g === f; });
+    car.form = car.forms.indexOf(f);
+    car.wheels = f.wheels;
+    car.wheelRadius = f.wheelRadius;
+    car.wheelDir = f.wheelDir;
+    car.nozzles.length = 0;
+    car.nozzles.push(...f.nozzles);
+    if (f.trailColor) car.trailColor = f.trailColor;
+    if (f.trailWidth !== undefined) car.trailWidth = f.trailWidth;
+    if (f.trailIntensity !== undefined) car.trailIntensity = f.trailIntensity;
+    if (f.trailLength !== undefined) car.trailLength = f.trailLength;
+  };
+  // 让某一台车整体发光（0 = 正常，1 = 被流光完全覆盖成一团亮光）
+  car.setGlow = (i, k, color) => {
+    const f = car.forms[i];
+    if (!f) return;
+    for (const { m, e, ei } of f.mats) {
+      m.emissive.copy(e).lerp(color, k);
+      m.emissiveIntensity = ei + (2.5 - ei) * k;
+    }
+  };
+  car.setForm(0);
 }
 
 // ---------------------------------------------------------------------------

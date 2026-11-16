@@ -41,6 +41,17 @@
     "envIntensity": 0.4
   },
 
+  "car2": {
+    "_说明": "变身后的超跑：Lamborghini Terzo Millennio，作者 SDC PERFORMANCE（Sketchfab，CC BY-NC 4.0）",
+    "model": "models/lamborghini_terzo_millennio.glb",
+    "length": 4.95,
+    "preciseBox": true,
+    "hide": ["detach_wing_10_carpaint_custom03_LOD2_0", "detach_03_5_details_orange_accents_LOD2_10"],
+    "rotateY": 0,
+    "envIntensity": 0.6,
+    "trails": []
+  },
+
   "ui": {
     "logo": "",
     "favicon": ""

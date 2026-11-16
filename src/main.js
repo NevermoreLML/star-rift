@@ -1,6 +1,6 @@
 import * as THREE from './lib.js';
 import { EffectComposer, RenderPass, UnrealBloomPass, ShaderPass, OutputPass } from './lib.js';
-import { Track, TYPE, TYPE_COLORS, LANES, LANE_ANG, WALL_H, createTrackMaterials, wrapLane, laneIndex, applyTrackArt, TRACK_STYLE } from './track.js';
+import { Track, TYPE, TYPE_COLORS, LANES, LANE_ANG, WALL_H, createTrackMaterials, wrapLane, laneIndex, applyTrackArt, TRACK_STYLE, R, TEST_BOOST } from './track.js';
 import { createBackground, createCar, Trail, Particles, SpeedLines, STAR_TEX, applyBackgroundArt, applyCarArt } from './scene.js';
 import { isRingsTheme, setupRingsTheme } from './themeRings.js';
 import { loadManifest, loadImage, loadTexture, swapImage, each, ASSET_BASE } from './assets.js';
@@ -15,6 +15,12 @@ const PHYS = {
   VMAX: 62,          // 基础极速（单位/秒），难度越高越快
   VMAX_BONUS: 10,
   ACCEL_TIME: 3,     // 0 → 极速 用时
+  ACCEL_TIME_SUPER: 2, // 变身成超跑后 0 → 极速 用时
+  SUPER_STEER: 1.3,  // 超跑转向更灵敏
+  SUPER_KMH: 500,    // 车速到这么多 km/h 就变身
+  SUPER_HOLD: 10,    // 变身后至少保持多少秒，之后车速低于 SUPER_KMH 就变回去
+  MAX_FLIPS: 1,      // 翻滚跳（空中连跳）默认最多攒几次
+  MAX_FLIPS_SUPER: 2, // 第一次变身之后，这一局的上限一直是这么多
   G: 34,             // 指向管壁的“重力”
   JUMP_V: 12.5,      // 起跳初速度（高度固定 ≈ 2.3）
   BOUNCE_V: 18,      // 弹射平台
@@ -26,9 +32,12 @@ const PHYS = {
   LAND_TOL: 0.35,    // 允许低于平台面多少仍能落上
   SUPPORT_HALF_L: 1.6, // 判定支撑时看车头/车尾离中心多远（车身半长）
   EDGE_LAND_TOL: 0.15, // 只有车头/车尾压上平台时允许低于平台面多少
+  START_LAND_TOL: 1.6,  // 刚到一条道的起点时，允许低于路面多少仍算落上去（尽量判存活）
+  UNDER_TOL: 1.0,       // 其他地方：低于路面 1 米以内碰到路面都托回路面上，更低才算撞到平台底下
+  START_ZONE: 6,        // 道的起点往后这么多米内都算“起点”
   COYOTE: 0.12,      // 开出平台边缘后仍可普通起跳的宽限时间（秒）
   JUMP_BUFFER: 0.15, // 落地前提前按跳，落地瞬间自动起跳的缓冲时间（秒）
-  RESCUE_DEPTH: 2.2, // 掉出平台后，低于平台面这么多才算坠毁（之前可以连跳自救）
+  RESCUE_DEPTH: 5,   // 掉出平台后，低于平台面这么多才算坠毁（约 0.54 秒，之前可以翻滚跳自救；翻滚跳最多升高约 5.9 米）
   ENERGY_DIST: 1000, // 在赛道上行驶多远攒满连跳能量
   AIR_JUMP_MUL: 1.6, // 连跳初速度 = 起跳初速度 × 这个倍数（额外升高约 5.9）
   MAX_H: 6.5,        // 离管壁的最大高度，防止飞过管道中心
@@ -69,15 +78,24 @@ const BoostShader = {
   uniforms: {
     tDiffuse: { value: null },
     uAmount: { value: 0 },
+    uSpeed: { value: 0 },
     uCenter: { value: new THREE.Vector2(0.5, 0.56) },
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float uAmount; uniform vec2 uCenter; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float uAmount; uniform float uSpeed; uniform vec2 uCenter; varying vec2 vUv;
     void main(){
       vec4 base = texture2D(tDiffuse, vUv);
-      if (uAmount < 0.001) { gl_FragColor = base; return; }
+      if (uAmount < 0.001 && uSpeed < 0.001) { gl_FragColor = base; return; }
       vec2 dir = vUv - uCenter;
+      // 平时的速度模糊：只在画面四周（近处飞过的地面、岩壁），中间看路的地方保持清楚，没有色差
+      float ks = uSpeed * smoothstep(0.28, 0.75, length(dir * vec2(1.0, 1.15)));
+      if (uAmount < 0.001) {
+        vec3 sum = vec3(0.0);
+        for (int i = 0; i < 10; i++) sum += texture2D(tDiffuse, vUv - dir * (float(i) / 9.0) * 0.06 * ks).rgb;
+        gl_FragColor = vec4(mix(base.rgb, sum / 10.0, clamp(ks * 1.6, 0.0, 1.0)), base.a);
+        return;
+      }
       // 中心和下方（赛车与脚下跑道）不受影响，越往四周越虚
       vec2 m = vec2(dir.x * 1.15, dir.y > 0.0 ? dir.y : dir.y * 0.4);
       float mask = smoothstep(0.2, 0.62, length(m));
@@ -118,6 +136,38 @@ const trails = [new Trail(scene, 0xff3cf0, 40), new Trail(scene, 0xff3cf0, 40)];
 const particles = new Particles(scene);
 const speedLines = new SpeedLines(scene);
 const audio = new SynthAudio();
+
+// 车底接触阴影：贴着路面的一块柔和暗影，车跳起来时变淡、变大
+const contactShadow = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(64, 64, 4, 64, 64, 64);
+  grd.addColorStop(0, 'rgba(0,0,0,1)');
+  grd.addColorStop(0.55, 'rgba(0,0,0,0.75)');
+  grd.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 128, 128);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
+    map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false, opacity: 0.8,
+    polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+  }));
+  m.renderOrder = 1;
+  m.visible = false;
+  scene.add(m);
+  return m;
+})();
+
+// 近处飘过的小碎石（石头主题）：散在管道里的空中，车开过去时从镜头边上飞快地掠过，增加近景速度感
+const DEBRIS_N = 70;
+const debris = (() => {
+  const geo = new THREE.IcosahedronGeometry(1, 0);
+  const m = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ color: 0x6d655b, roughness: 0.95, flatShading: true }), DEBRIS_N);
+  m.frustumCulled = false;
+  m.visible = false;
+  scene.add(m);
+  return { mesh: m, items: Array.from({ length: DEBRIS_N }, () => ({ s: -1e9, a: 0, h: 0, sc: 0, rot: new THREE.Euler() })) };
+})();
 
 // ---------------------------------------------------------------------------
 // 输入
@@ -184,6 +234,7 @@ const ui = {
   modeLabel: document.getElementById('hud-mode'),
   speed: document.getElementById('hud-speed'),
   speedFill: document.getElementById('hud-speed-fill'),
+  vmax: document.getElementById('hud-vmax'),
   progress: document.getElementById('hud-progress'),
   progressFill: document.getElementById('hud-progress-fill'),
   radar: document.getElementById('radar'),
@@ -387,8 +438,14 @@ function startGame(mode) {
   if (game.track) game.track.dispose();
   const seed = mode === 'race' ? PHYS.RACE_SEED : (Math.random() * 1e9) | 0;
   game.track = new Track(seed, mode, scene, mats);
+  // 峡谷开场：不倒计时，赛车从远处以极速冲过来、从镜头下面穿过，镜头转身跟上后交给玩家
+  const intro = TRACK_STYLE.canyon;
+  game.vmaxMul = 1; // 新的一局极速倍数从 1 开始（下面算开场车速要用）
+  game.form = 0; game.tf = null; game.superT = 0; game.flips = 0; game.flipCap = PHYS.MAX_FLIPS;
+  if (car.setForm) { car.setForm(0); car.setGlow(0, 0, GLOW); car.setGlow(1, 0, GLOW); }
   Object.assign(game, {
-    mode, state: 'countdown', s: 0, a: 5.5, h: 0, v: 0, vh: 0, air: false,
+    mode, state: intro ? 'intro' : 'countdown', s: intro ? INTRO_CAM.start : 0, a: 5.5, h: 0, v: intro ? vmaxAt(0) : 0, vh: 0, air: false,
+    introT: 0, introPassed: false, vmaxMul: 1, brakeHeld: false,
     time: 0, countdown: 3.2, lastBeep: 4, lost: false, lostT: 0, reason: '', boostT: 0, lastTile: null,
     camA: 5.5, camH: 0, camFrozen: false, steerVis: 0, shake: 0, spin: 0, boostFx: 0, energy: 0, flipT: 0, flipDir: 1, coyote: 0, jumpBuf: 0,
   });
@@ -397,7 +454,8 @@ function startGame(mode) {
   car.group.visible = true;
   trails.forEach((t) => { t.reset(); t.mesh.visible = true; });
   audio.musicLevel = 1;
-  show(ui.menu, false); show(ui.pause, false); show(ui.result, false); show(ui.hud, true);
+  show(ui.menu, false); show(ui.pause, false); show(ui.result, false); show(ui.hud, !intro);
+  if (intro) camera.fov = INTRO_CAM.fov;
   lastResult = null;
   document.body.classList.add('in-run');
   show(ui.progress, mode === 'race');
@@ -428,11 +486,11 @@ function endRun(finished) {
   let score = null;
   if (mode === 'race' && finished) {
     const best = store.get('bestRace');
-    if (!best || game.time < best) { store.set('bestRace', game.time); r.record = true; }
+    if (!TEST_BOOST && (!best || game.time < best)) { store.set('bestRace', game.time); r.record = true; }
     score = game.time;
   } else if (mode === 'endless') {
     const best = store.get('bestEndless');
-    if (!best || game.s > best) { store.set('bestEndless', game.s); r.record = true; }
+    if (!TEST_BOOST && (!best || game.s > best)) { store.set('bestEndless', game.s); r.record = true; } // 测试赛道不记最好成绩
     score = Math.floor(game.s);
   }
   r.progress = Math.floor(Math.min(1, game.s / game.track.goal) * 100);
@@ -441,7 +499,7 @@ function endRun(finished) {
   show(ui.result, true);
   if (score > 0) {
     r.uploading = true;
-    board.submit(mode, nickname, score, { time: game.time }).then((out) => {
+    (TEST_BOOST ? Promise.resolve({}) : board.submit(mode, nickname, score, { time: game.time })).then((out) => { // 测试赛道成绩不上传
       r.submit = out;
       r.uploading = false;
       if (lastResult === r) renderResult();
@@ -498,6 +556,9 @@ document.getElementById('btn-quit').addEventListener('click', toMenu);
 // ---------------------------------------------------------------------------
 const tmpV = new THREE.Vector3();
 const tmpV2 = new THREE.Vector3();
+const tmpV3 = new THREE.Vector3();
+const tmpV4 = new THREE.Vector3();
+const qShadow = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2); // 平面躺平到车身底下
 
 function lose(reason) {
   if (game.lost) return;
@@ -519,11 +580,25 @@ function lose(reason) {
   }
 }
 
-function vmaxAt(s) { return PHYS.VMAX + PHYS.VMAX_BONUS * Math.min(1, game.track.difficulty(s)); }
+// 极速 = 基础极速（随难度从 62 涨到 72）× 极速倍数 vmaxMul（开得稳慢慢涨，减速就扣，见 updateVmaxMul）
+function vmaxAt(s) { return (PHYS.VMAX + PHYS.VMAX_BONUS * Math.min(1, game.track.difficulty(s))) * (game.vmaxMul || 1); }
+
+// 极速成长：不刹车、不在减速道上时，每 10 秒多基础极速的 3%（没有上限，跳跃不影响）；
+// 按下刹车（按住不放只算一次）扣掉当前极速的 25%；开在减速道上每秒扣 25%
+function updateVmaxMul(dt, braking, onSlow) {
+  if (braking && !game.brakeHeld) game.vmaxMul *= 0.75;
+  game.brakeHeld = braking;
+  // 变身成超跑：成长翻倍（每 10 秒 +6%），减速道只扣每秒 15%
+  const sup = game.form === 1;
+  if (onSlow) game.vmaxMul *= Math.pow(sup ? 0.85 : 0.75, dt);
+  else if (!braking) game.vmaxMul += (sup ? 0.006 : 0.003) * (TEST_BOOST ? 10 : 1) * dt; // 测试赛道成长快 10 倍
+  game.vmaxMul = Math.max(0.3, game.vmaxMul);
+}
 
 function airJump() {
   game.vh = PHYS.JUMP_V * PHYS.AIR_JUMP_MUL;
-  game.energy = 0;
+  game.flips--;
+  if (game.flips < game.flipCap && game.energy >= 1) game.energy = 0;
   audio.airJump();
   showTip(t('tipAirJump'), 0.8);
   game.shake = Math.max(game.shake, 0.35);
@@ -559,6 +634,19 @@ function updateShockwave(dt) {
 function midSupport(s, a) {
   const tr = game.track, W = PHYS.CAR_HALF_W;
   return tr.laneAt(s, laneIndex(a)) || tr.laneAt(s, laneIndex(a - W)) || tr.laneAt(s, laneIndex(a + W));
+}
+
+// 车身附近是不是某条道的起点（道的开头，或洞的后沿）：车头已经压上、车身还在起点后 START_ZONE 米以内
+function nearLaneStart(s, a) {
+  const tr = game.track, W = PHYS.CAR_HALF_W, L = PHYS.CAR_HALF_L;
+  for (const aa of [a, a - W, a + W]) {
+    const lane = tr.laneRaw(s + L, laneIndex(aa));
+    if (!lane || lane.gone) continue;
+    let start = lane.s0;
+    for (const [h0, h1] of lane.holes || []) if (h1 <= s + L && h1 > start) start = h1;
+    if (s + L >= start && s - start < PHYS.START_ZONE) return true;
+  }
+  return false;
 }
 
 // 车身下面有没有平台：中间一段之外，车头已经压上平台、或车尾还在平台上也算
@@ -606,12 +694,15 @@ function physicsStep(dt) {
     return;
   }
 
-  let nextA = wrapLane(game.a + steer * (game.air ? PHYS.STEER_AIR : PHYS.STEER_GROUND) * dt);
+  let nextA = wrapLane(game.a + steer * (game.air ? PHYS.STEER_AIR : PHYS.STEER_GROUND) * (game.form === 1 ? PHYS.SUPER_STEER : 1) * dt);
   // 陨石外表面模式：在地面上开到陨石边缘就按不过去（空中可以左右移动去对准下一块）
   if (TRACK_STYLE.outside && !game.air && steer) {
     const edge = nextA + steer * PHYS.CAR_HALF_W;
     if (!tr.laneAt(game.s, laneIndex(edge)) && tr.laneAt(game.s, laneIndex(game.a))) nextA = game.a;
   }
+  // 峡谷里两边是岩壁，开不上去
+  const lim = tr.steerRange(game.s, game.a);
+  if (lim) nextA = THREE.MathUtils.clamp(nextA, lim[0], lim[1]);
   game.a = nextA;
 
   if (!game.air) {
@@ -641,21 +732,29 @@ function physicsStep(dt) {
         jumpQueued = false;
         jumped = true;
         audio.bounce();
-        particles.emit(car.group.position, tmpV.set(0, 0, 0), 5, TYPE_COLORS[TYPE.BOUNCE], 0.6, 40);
+        if (theme && theme.jet) {
+          // 石头主题：车底下猛地喷出一股气，把车顶上去
+          tr.path.point(game.s, game.a, 0, tmpV);
+          theme.jet(tmpV, tmpV2.copy(tr.path.r).negate());
+        } else particles.emit(car.group.position, tmpV.set(0, 0, 0), 5, TYPE_COLORS[TYPE.BOUNCE], 0.6, 40);
       }
       if (!game.air) {
         if (braking) game.v = Math.max(0, game.v - PHYS.BRAKE * dt);
-        else if (game.v < cap) game.v = Math.min(cap, game.v + (vmax / PHYS.ACCEL_TIME) * dt);
+        else if (game.v < cap) game.v = Math.min(cap, game.v + (vmax / (game.form === 1 ? PHYS.ACCEL_TIME_SUPER : PHYS.ACCEL_TIME)) * dt);
         else if (game.boostT <= 0 || tile.type === TYPE.SLOW) game.v = Math.max(cap, game.v - (tile.type === TYPE.SLOW ? 90 : 18) * dt);
         if (jumpQueued || game.jumpBuf > 0) {
           groundJump();
           jumped = true;
         }
-        // 在赛道上行驶的距离积累连跳能量
-        if (game.energy < 1) {
-          game.energy = Math.min(1, game.energy + (game.v * dt) / PHYS.ENERGY_DIST);
-          if (game.energy >= 1) { audio.ready(); showTip(t('tipReady'), 1.2); }
-        }
+        // 在赛道上行驶的距离积累连跳能量：攒满一次就多一次翻滚跳，最多攒 flipCap 次（满了能量条停在 100%）
+        if (game.flips < game.flipCap) {
+          game.energy += (game.v * dt) / PHYS.ENERGY_DIST;
+          if (game.energy >= 1) {
+            game.flips++;
+            game.energy = game.flips < game.flipCap ? 0 : 1;
+            audio.ready(); showTip(t('tipReady'), 1.2);
+          }
+        } else game.energy = 1;
       }
     }
   }
@@ -667,7 +766,7 @@ function physicsStep(dt) {
     const nearLanding = game.vh < 0 && game.h > -PHYS.LAND_TOL && game.h < 0.8 && supportAt(game.s + game.v * 0.06, game.a);
     if (game.coyote > 0) groundJump();
     else if (nearLanding) game.jumpBuf = PHYS.JUMP_BUFFER;
-    else if (game.energy >= 1) airJump();
+    else if (game.flips > 0) airJump();
     else { game.jumpBuf = PHYS.JUMP_BUFFER; showTip(t('tipNoEnergy'), 0.7); }
   }
   jumpQueued = false;
@@ -683,18 +782,24 @@ function physicsStep(dt) {
       // 车身中间落在平台上：有一定容差；只有车头/车尾压上：必须几乎齐平，避免直接开过空隙
       const mid = midSupport(game.s, game.a);
       const tile = mid || supportAt(game.s, game.a);
-      if (tile && game.h > -(mid ? PHYS.LAND_TOL : PHYS.EDGE_LAND_TOL)) {
+      // 刚到一条道的起点（道的开头、洞的后沿）：车比路面低一些也算落上去，直接托回路面，不判掉落
+      const atStart = tile && nearLaneStart(game.s, game.a);
+      const tol = atStart ? PHYS.START_LAND_TOL : PHYS.UNDER_TOL;
+      if (tile && game.h > -tol) {
         const impact = -game.vh;
         game.h = 0;
         game.vh = 0;
         game.air = false;
         game.coyote = 0;
+        game.landK = Math.min(1, impact / 18);
         if (impact > 5) {
           audio.land();
           game.shake = Math.max(game.shake, Math.min(0.5, impact * 0.025));
-          particles.emit(car.group.position, tmpV.set(0, 0, 0), 4, TYPE_COLORS[tile.type], 0.5, 30);
+          // 石头主题：落地扬起一团尘土；霓虹主题：赛道颜色的光点
+          if (TRACK_STYLE.slab) particles.emit(car.group.position, tmpV.set(0, 0, 0), 5, '#5a4e42', 0.6, 40);
+          else particles.emit(car.group.position, tmpV.set(0, 0, 0), 4, TYPE_COLORS[tile.type], 0.5, 30);
         }
-      } else if ((tile && game.h <= -PHYS.LAND_TOL) || game.h <= -PHYS.RESCUE_DEPTH) {
+      } else if ((tile && !atStart && game.h <= -PHYS.UNDER_TOL) || game.h <= -PHYS.RESCUE_DEPTH) {
         // 撞到平台底下，或已经掉得太深：没救了。在这之前还能用连跳救回来
         lose('fall');
         return;
@@ -702,6 +807,7 @@ function physicsStep(dt) {
     }
   }
 
+  updateVmaxMul(dt, braking, !game.air && !!game.lastTile && game.lastTile.type === TYPE.SLOW);
   game.boostT -= dt;
   trackHints();
   game.s += game.v * dt;
@@ -755,7 +861,9 @@ function updateCarPose(dt) {
 
   path.point(game.s, game.a, game.h, car.group.position);
   const up = tmpV.copy(path.r).negate();
-  const fwd = tmpV2.copy(path.frame(game.s).t);
+  // 前进方向按赛道上前后两点算（分岔时两半往两边分开，方向和管道中轴线不一样）
+  const fwd = path.point(game.s + 1, game.a, game.h, tmpV2).sub(car.group.position).normalize();
+  up.addScaledVector(fwd, -up.dot(fwd)).normalize();
   // 空中俯仰
   const pitch = game.air || game.lost ? THREE.MathUtils.clamp(game.vh * 0.022, -0.4, 0.35) : 0;
   const f2 = fwd.clone().multiplyScalar(Math.cos(pitch)).addScaledVector(up, Math.sin(pitch));
@@ -779,10 +887,40 @@ function updateCarPose(dt) {
     car.body.quaternion.setFromAxisAngle(AX_Z, -game.flipDir * ease * Math.PI * 2);
     car.body.position.copy(FLIP_PIVOT).applyQuaternion(car.body.quaternion).negate().add(FLIP_PIVOT);
   } else {
-    car.body.quaternion.identity();
-    // 有轮子的车贴地跑，不做悬浮的上下轻晃
-    const bob = car.wheels.length || game.air ? 0 : Math.sin(game.clock * 18) * 0.02;
+    // 悬挂：车身随石头路面的起伏轻微颠簸、左右晃（按走过的距离算，越快颠得越细碎）；
+    // 落地时往下一沉再弹回来
+    game.landK = Math.max(0, (game.landK || 0) - dt * 3.5);
+    const s = game.s;
+    const road = game.air ? 0 : 1;
+    const bob = road * (0.022 * Math.sin(s * 2.3) + 0.013 * Math.sin(s * 5.1 + 1) + 0.006 * Math.sin(s * 11.7 + 2))
+      - 0.16 * game.landK * Math.cos(game.landK * 9);
+    qSpin.setFromAxisAngle(AX_Z, road * (0.007 * Math.sin(s * 1.3 + 2) + 0.003 * Math.sin(s * 4.7)));
+    car.body.quaternion.setFromAxisAngle(AX_X, road * 0.005 * Math.sin(s * 1.9) + 0.03 * game.landK);
+    car.body.quaternion.multiply(qSpin);
     car.body.position.set(0, bob, 0);
+  }
+
+  // 接触阴影
+  if (!game.lost && game.h < 6) {
+    path.point(game.s, game.a, 0.11, contactShadow.position);
+    const fade = THREE.MathUtils.clamp(1 - Math.max(0, game.h) / 5, 0, 1);
+    contactShadow.visible = true;
+    contactShadow.material.opacity = 0.95 * fade * fade;
+    contactShadow.quaternion.copy(car.group.quaternion).multiply(qShadow);
+    const k = 1 + Math.max(0, game.h) * 0.12;
+    contactShadow.scale.set(2.6 * k, 5.4 * k, 1);
+  } else contactShadow.visible = false;
+
+  // 贴地时后轮扬起石屑尘土
+  if ((game.state === 'playing' || game.state === 'intro') && !game.air && !game.lost) {
+    car.group.updateMatrixWorld();
+    const norm0 = game.v / vmaxAt(game.s);
+    if (TRACK_STYLE.slab && Math.random() < 0.35 + 0.5 * norm0) {
+      for (const sx of [-0.85, 0.85]) {
+        tmpV3.set(sx, 0.08, -1.7).applyMatrix4(car.group.matrixWorld);
+        particles.emit(tmpV3, tmpV4.copy(up).multiplyScalar(1.5 + Math.random() * 2).addScaledVector(fwd, 4), 1.2, '#2a241f', 0.3, 1);
+      }
+    }
   }
 
   // 轮子随车速转动（空中也继续空转）
@@ -841,9 +979,36 @@ function updateCamera(dt) {
   const fxTarget = game.lost ? 0 : THREE.MathUtils.clamp((norm - 1) / 0.4, 0, 1);
   game.boostFx += (fxTarget - game.boostFx) * (1 - Math.exp(-dt * (fxTarget > game.boostFx ? 10 : 3)));
   boostPass.uniforms.uAmount.value = game.boostFx;
+  // 速度模糊：随车速变强（起步几乎没有，极速时明显），先做得偏弱
+  boostPass.uniforms.uSpeed.value = game.lost ? 0 : 0.55 * THREE.MathUtils.smoothstep(norm, 0.3, 1.1);
+  updateDebris(path);
   bloom.strength = 0.6;
   updateTunnelFocus(dt);
   speedLines.update(dt, path, game.s, game.a, game.lost ? 0 : game.v, game.lost ? 0 : norm, game.boostFx);
+}
+
+// 近处碎石：在车前方 40～140 米的管道空中刷出来，离开镜头后面就换到前面去；避开车和镜头正前方的视线
+const debrisDummy = new THREE.Object3D();
+function spawnDebris(o, ahead) {
+  o.s = game.s + ahead;
+  do { o.a = Math.random() * LANES; } while (Math.abs(shortestLaneDelta(o.a, game.a)) < 1.3);
+  o.h = 1 + Math.random() * 6.5;
+  o.sc = 0.06 + Math.pow(Math.random(), 2.5) * 0.35;
+  o.rot.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
+}
+function updateDebris(path) {
+  const on = !!TRACK_STYLE.slab && !TRACK_STYLE.outside;
+  debris.mesh.visible = on;
+  if (!on) return;
+  debris.items.forEach((o, i) => {
+    if (o.s < game.s - 14 || o.s > game.s + 200) spawnDebris(o, o.s < -1e8 ? 10 + Math.random() * 130 : 40 + Math.random() * 100);
+    path.point(o.s, o.a, o.h, debrisDummy.position);
+    debrisDummy.rotation.copy(o.rot);
+    debrisDummy.scale.setScalar(o.sc);
+    debrisDummy.updateMatrix();
+    debris.mesh.setMatrixAt(i, debrisDummy.matrix);
+  });
+  debris.mesh.instanceMatrix.needsUpdate = true;
 }
 
 // 隧道中心（前方管道中轴线上的点）在屏幕上的位置：加速残影以它为圆心，
@@ -856,7 +1021,7 @@ function updateTunnelFocus(dt) {
   camera.updateMatrixWorld();
   // 管道模式：前方管道中轴线；外表面模式：前方赛道上空一点
   if (TRACK_STYLE.outside) game.track.path.point(game.s + 60, game.camA, 2, tunnelPt);
-  else tunnelPt.copy(game.track.path.frame(game.s + 60).p);
+  else game.track.path.point(game.s + 60, game.camA, R, tunnelPt); // 管道（分岔时是车所在那一半）的中轴线
   const k = 1 - Math.exp(-dt * 6);
   const ndc = tmpV.copy(tunnelPt).project(camera);
   if (ndc.z < 1) {
@@ -867,6 +1032,119 @@ function updateTunnelFocus(dt) {
     tunnelUv.lerp(tunnelUvTarget, k);
   }
   boostPass.uniforms.uCenter.value.copy(tunnelUv);
+}
+
+// 开场运镜：镜头贴着谷底、全程以玩家的极速往前飞（地面流过的速度和玩家接手后完全一样），同时回头看；
+// 赛车从后面远处追上来：一开始比镜头快很多，越接近越慢，从镜头斜下方超过去后，
+// 正好停在跟车镜头前面 lead 米、和镜头同速——镜头转身就是玩家视角，速度、声音都不用变。
+// 赛车相对镜头的位置 x(t) = -gap + (gap + lead)·(1 - (1 - t/T)²)，T 秒时相对速度降到 0
+const INTRO_CAM = { cam: -40, gap: 30, lead: 11, T: 1.0, camA: 5.95, camH: 2.2, blend: 0.5, fov: 80 };
+INTRO_CAM.start = INTRO_CAM.cam - INTRO_CAM.gap;
+const introFix = new THREE.Vector3();
+const introLook = new THREE.Vector3();
+
+// 赛车超过镜头的时刻：x(t) = 0
+function introPassT() { const c = INTRO_CAM; return c.T * (1 - Math.sqrt(c.lead / (c.gap + c.lead))); }
+function introCamS() { return INTRO_CAM.cam + game.v * game.introT; }
+
+// 变身：车速到 SUPER_KMH 时，四面八方的流光冲向车身、把整台车裹成一团光，
+// 光里的轮廓变成超跑，光再慢慢褪去。超跑至少保持 SUPER_HOLD 秒，之后车速低于 SUPER_KMH 就用同样的方式变回去
+const GLOW = new THREE.Color(0.55, 0.95, 1.0);
+const TF = { gather: 1.2, total: 2.8 }; // 流光聚拢 1.2 秒，换车身后光褪去 1.6 秒
+function updateTransform(dt) {
+  if (!car.forms || car.forms.length < 2 || game.lost) return;
+  const kmh = Math.round(game.v * KMH); // 和仪表盘显示的一样：显示到 500 就变
+  if (!game.tf) {
+    if (game.form === 0 && kmh >= PHYS.SUPER_KMH) game.tf = { t: 0, to: 1, swapped: false };
+    else if (game.form === 1) {
+      game.superT -= dt;
+      if (game.superT <= 0 && kmh < PHYS.SUPER_KMH) game.tf = { t: 0, to: 0, swapped: false };
+    }
+    if (!game.tf) return;
+  }
+  const tf = game.tf;
+  tf.t += dt;
+  const pos = car.group.position;
+  const path = game.track.path;
+  if (tf.t < TF.gather) {
+    // 流光：从车四周一圈往车身冲，跟着车一起往前跑
+    const k = tf.t / TF.gather;
+    car.setGlow(game.form, k * k, GLOW);
+    path.point(game.s, game.a, 0, tmpV);
+    const up = tmpV3.copy(path.r).negate();
+    const fwd = tmpV4.copy(path.frame(game.s).t);
+    const side = tmpV2.crossVectors(up, fwd).normalize();
+    for (let i = 0; i < 10; i++) {
+      const ang = Math.random() * Math.PI * 2, R = 3 + 5 * (1 - k) + Math.random() * 2;
+      const off = new THREE.Vector3().addScaledVector(side, Math.cos(ang) * R).addScaledVector(up, Math.abs(Math.sin(ang)) * R * 0.7 + 0.5).addScaledVector(fwd, (Math.random() - 0.3) * 4);
+      const p = off.clone().add(pos);
+      const vel = fwd.clone().multiplyScalar(game.v).addScaledVector(off.normalize(), -28);
+      particles.emit(p, vel, 0.5, Math.random() < 0.5 ? '#9ff6ff' : '#ffffff', 0.22, 1);
+    }
+  } else {
+    if (!tf.swapped) {
+      // 被光完全裹住的一瞬间换车身
+      tf.swapped = true;
+      car.setGlow(game.form, 0, GLOW);
+      game.form = tf.to;
+      car.setForm(game.form);
+      game.shake = Math.max(game.shake, 0.5);
+      particles.emit(pos, tmpV.set(0, 0, 0), 9, '#c8fbff', 0.5, 60);
+      audio.boost();
+      if (tf.to === 1) {
+        game.superT = PHYS.SUPER_HOLD;
+        game.flipCap = PHYS.MAX_FLIPS_SUPER; // 第一次变身后上限变成 2，变回 F1 也不降
+        game.flips = Math.min(game.flipCap, game.flips + 1);
+        if (game.flips < game.flipCap) game.energy = Math.min(game.energy, 0.999);
+      }
+    }
+    const k = Math.min(1, (tf.t - TF.gather) / (TF.total - TF.gather));
+    car.setGlow(game.form, 1 - k, GLOW);
+    if (tf.t >= TF.total) { car.setGlow(game.form, 0, GLOW); game.tf = null; }
+  }
+}
+
+function updateIntro(dt) {
+  const c = INTRO_CAM;
+  game.introT += dt;
+  const u = Math.min(1, game.introT / c.T);
+  game.s = introCamS() - c.gap + (c.gap + c.lead) * (1 - (1 - u) * (1 - u));
+  if (!game.introPassed && game.s > introCamS() - 2) {
+    game.introPassed = true;
+    game.shake = 0.35;
+  }
+  if (game.introT >= Math.max(INTRO_CAM.T, introPassT() + INTRO_CAM.blend)) {
+    game.state = 'playing';
+    show(ui.hud, true);
+    show(ui.countdown, true);
+    ui.countdown.textContent = 'GO!';
+    ui.countdown.classList.remove('pop'); void ui.countdown.offsetWidth; ui.countdown.classList.add('pop');
+    setTimeout(() => show(ui.countdown, false), 700);
+    jumpQueued = false;
+  }
+}
+
+function updateIntroCamera(dt) {
+  const path = game.track.path;
+  const shake = game.shake;
+  game.shake = 0;
+  updateCamera(dt); // 先算出正常跟车的镜头
+  const t = THREE.MathUtils.clamp((game.introT - introPassT() + 0.05) / INTRO_CAM.blend, 0, 1);
+  const k = 1 - Math.pow(1 - t, 2.2); // 车一穿过去镜头就跟上，越接近跟车位置越慢
+  // 沿赛道方向镜头始终和玩家同速（结束时正好在车后 lead 米 = 跟车位置），只有左右、高度慢慢过渡到跟车镜头
+  const chaseH = 3.6 + Math.max(-1, game.camH) * 0.55;
+  path.point(introCamS(), INTRO_CAM.camA + (game.camA - INTRO_CAM.camA) * k, INTRO_CAM.camH + (chaseH - INTRO_CAM.camH) * k, introFix);
+  introLook.copy(car.group.position).addScaledVector(game.camUp, 0.5);
+  camera.position.copy(introFix);
+  if (shake > 0) {
+    camera.position.add(tmpV.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(shake * 0.5));
+    game.shake = Math.max(0, shake - dt * 1.5);
+  }
+  introLook.lerp(lookAt, k);
+  camera.lookAt(introLook);
+  const vmax = vmaxAt(game.s);
+  camera.fov = INTRO_CAM.fov + (70 + 16 * Math.min(game.v / vmax, 1) - INTRO_CAM.fov) * k;
+  camera.updateProjectionMatrix();
 }
 
 function updateMenuCamera(dt) {
@@ -882,6 +1160,9 @@ function updateMenuCamera(dt) {
   camera.fov = 75;
   camera.updateProjectionMatrix();
   boostPass.uniforms.uAmount.value = 0;
+  boostPass.uniforms.uSpeed.value = 0;
+  debris.mesh.visible = false;
+  contactShadow.visible = false;
   bloom.strength = 0.6;
   speedLines.update(dt, path, game.s, game.camA, 34, 0.55, 0);
 }
@@ -941,11 +1222,16 @@ function updateHud() {
   ui.time.textContent = fmtTime(game.time);
   ui.dist.textContent = `${Math.floor(game.s)} m`;
   ui.speed.textContent = Math.round(game.v * KMH);
+  if (ui.vmax) {
+    const pct = Math.round((game.vmaxMul - 1) * 100);
+    ui.vmax.textContent = `${pct >= 0 ? '+' : ''}${pct}%`;
+    ui.vmax.classList.toggle('down', pct < 0);
+  }
   ui.speedFill.style.width = `${Math.min(100, (game.v / (vmax * 1.4)) * 100)}%`;
   ui.speedFill.classList.toggle('boost', game.v > vmax * 1.02);
-  const full = game.energy >= 1;
+  const full = game.flips > 0;
   ui.energyFill.style.width = `${Math.floor(game.energy * 100)}%`;
-  ui.energyPct.textContent = `${Math.floor(game.energy * 100)}%`;
+  ui.energyPct.textContent = `×${game.flips}  ${Math.floor(game.energy * 100)}%`;
   if (ui.energy.classList.contains('full') !== full) ui.energy.classList.toggle('full', full);
   if (game.mode === 'race') ui.progressFill.style.width = `${Math.min(100, (game.s / game.track.goal) * 100)}%`;
   drawRadar();
@@ -985,9 +1271,12 @@ function tick(dt) {
         game.state = 'playing';
         setTimeout(() => show(ui.countdown, false), 600);
       }
+    } else if (st === 'intro') {
+      updateIntro(dt);
     } else if (st === 'playing') {
       const sub = Math.ceil(dt / (1 / 120));
       for (let i = 0; i < sub && game.state === 'playing'; i++) physicsStep(dt / sub);
+      if (game.state === 'playing') updateTransform(dt);
       if (!game.lost) game.time += dt;
       else {
         game.lostT += dt;
@@ -1002,15 +1291,15 @@ function tick(dt) {
     }
     game.track.update(game.s, game.clock, dt);
     if (car.group.visible) updateCarPose(dt);
-    updateCamera(dt);
+    if (st === 'intro') updateIntroCamera(dt); else updateCamera(dt);
     const vmax = vmaxAt(game.s);
-    audio.setEngine(Math.min(1.3, game.v / vmax), !game.air, keys.has('brake'), (st === 'playing' || st === 'finished') && !game.lost);
+    audio.setEngine(Math.min(1.3, game.v / vmax), !game.air, keys.has('brake'), (st === 'playing' || st === 'finished' || st === 'intro') && !game.lost);
     updateHud();
   }
   if (st === 'paused' || st === 'menu') audio.setEngine(0, true, false, false);
 
   particles.update(dt);
-  if (theme && game.track) theme.update(dt, game.track.path, game.s);
+  if (theme && game.track) theme.update(dt, game.track.path, game.s, game.track, camera);
   updateShockwave(dt);
   bg.update(camera.position, game.clock);
   composer.render();
@@ -1030,6 +1319,26 @@ async function applyArt() {
   if (!theme) await applyTrackArt(mats, art); // 光环主题用自己的陨石材质
   await applyBackgroundArt(bg, art, scene);
   await applyCarArt(car, art);
+  // 提前把两台车的着色器编译好、贴图传到显卡：否则第一次变身时超跑才第一次被画出来，会卡一下
+  if (car.forms && car.forms.length > 1) {
+    const wasVisible = car.group.visible;
+    car.group.visible = true;
+    for (const f of car.forms) f.model.visible = true;
+    car.group.traverse((o) => {
+      if (!o.isMesh) return;
+      for (const m of [].concat(o.material)) for (const k of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap']) if (m && m[k]) renderer.initTexture(m[k]);
+    });
+    // 真的经过后期效果画一帧（后期效果是画到离屏缓冲里的，着色器版本和直接画到屏幕不一样，要按实际流程编译）
+    const keepPos = car.group.position.clone();
+    camera.getWorldDirection(tmpV);
+    car.group.position.copy(camera.position).addScaledVector(tmpV, 30);
+    car.group.updateMatrixWorld(true);
+    renderer.compile(scene, camera);
+    composer.render();
+    car.group.position.copy(keepPos);
+    car.setForm(game.form || 0);
+    car.group.visible = wasVisible;
+  }
   await each([['star_particle', tx.star_particle]], async (key, file) => swapImage(STAR_TEX, await loadImage(file)));
   await each([['shockwave', tx.shockwave]], async (key, file) => {
     shockwave.material.map = await loadTexture(file);

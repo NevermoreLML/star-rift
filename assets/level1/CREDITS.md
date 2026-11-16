@@ -5,6 +5,7 @@
 | 用在哪 | 文件 | 来源 | 作者 | 协议 | 处理 |
 |---|---|---|---|---|---|
 | 赛车模型 | `models/mercedes_f1_w14.glb` | [Sketchfab · Mercedes F1 W14 [FREE!!]](https://sketchfab.com/3d-models/mercedes-f1-w14-free-26fda66f3e8a48d5a636056f8a64e299) | 3dblender_1 | CC BY 4.0 | 未修改；游戏里缩放到 5.2 米长，四个轮子随车速转动 |
+| 变身后的超跑 | `models/lamborghini_terzo_millennio.glb` | [Sketchfab · ( FREE ) Lamborghini Terzo Millennio](https://sketchfab.com/3d-models/free-lamborghini-terzo-millennio-7ad3dffa9d344c3c978eafcc220cb709) | SDC PERFORMANCE | CC BY-NC 4.0 | 未修改；游戏里缩放到 4.95 米长 |
 | 天空全景 | `sky/milkyway.jpg` | [ESO · The Milky Way panorama (eso0932a)](https://www.eso.org/public/images/eso0932a/) | ESO/S. Brunier | CC BY 4.0 | 缩小到 4096×2048，提亮暗部并略向紫蓝调色 |
 | 行星：土星 + 土星环 | `planets/saturn.jpg`、`planets/saturn_ring.png` | [Solar System Scope Textures](https://www.solarsystemscope.com/textures/) | Solar System Scope | CC BY 4.0 | 土星环由径向色带转成俯视的圆环图 |
 | 行星：海王星 | `planets/neptune.jpg` | 同上 | Solar System Scope | CC BY 4.0 | 未修改 |
